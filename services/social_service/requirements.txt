@@ -1,0 +1,22 @@
+streamlit
+torch>=2.0.0
+transformers>=4.30.0
+numpy>=1.24.0
+
+# Database
+psycopg2-binary>=2.9.6
+
+# API Server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# Logging & Utilities
+python-json-logger>=2.0.7
+
+# Development 
+pytest>=7.4.0
+httpx>=0.24.1  

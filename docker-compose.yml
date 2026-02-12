@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16
+    container_name: recoverly_db
+    environment:
+      POSTGRES_DB: recoverly_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Social Service (Component 3)
+  social-service:
+    build: ./services/social_service
+    container_name: social_service
+    ports:
+      - "8003:8003"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=recoverly_platform
+      - DB_USER=postgres
+      - DB_PASSWORD=${DB_PASSWORD}
+      - API_PORT=8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped
+
+  # Risk Service (Component 1)
+  # Uncomment when implemented
+  # risk-service:
+  #   build: ./services/risk_service
+  #   container_name: risk_service
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     - DB_HOST=postgres
+  #     - API_PORT=8001
+  #   depends_on:
+  #     - postgres
+
+  # Reco Service (Component 2)
+  # Uncomment when implemented
+  # reco-service:
+  #   build: ./services/reco_service
+  #   container_name: reco_service
+  #   ports:
+  #     - "8002:8002"
+  #   environment:
+  #     - DB_HOST=postgres
+  #     - API_PORT=8002
+  #   depends_on:
+  #     - postgres
+
+  # Causal Service (Component 4)
+  # Uncomment when implemented
+  # causal-service:
+  #   build: ./services/causal_service
+  #   container_name: causal_service
+  #   ports:
+  #     - "8004:8004"
+  #   environment:
+  #     - DB_HOST=postgres
+  #     - API_PORT=8004
+  #   depends_on:
+  #     - postgres
+
+volumes:
+  postgres_data:

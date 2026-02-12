@@ -1,0 +1,20 @@
+{
+  "version": "fusion_v2",
+  "risk_score": {
+    "method": "max_weighted",
+    "neg_weight": 0.7
+  },
+  "thresholds": {
+    "T_relapse": 0.5,
+    "T_craving": 0.5,
+    "T_high": 0.7000000000000001,
+    "T_mid": 0.3,
+    "T_iso": 0.8999999999999999,
+    "T_iso_escalate": 0.7000000000000002,
+    "T_toxic": 0.7
+  },
+  "val_metrics": {
+    "macro_f1": 0.8582205527138391,
+    "high_risk_recall": 0.9090909090909091
+  }
+}
