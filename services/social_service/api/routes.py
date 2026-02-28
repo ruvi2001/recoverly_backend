@@ -8,20 +8,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
+from agent.intervention_agent import get_agent
 import logging
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import API_CONFIG, RECOVERLY_APP_CONFIG, LOGGING_CONFIG
-from database.temporal_engine import TemporalRiskEngine, get_engine
-from models.risk_analyzer import get_analyzer
+from core.config import API_CONFIG, MOBILE_APP_CONFIG, LOGGING_CONFIG, SERVICE_NAME
+from db.temporal_engine import TemporalRiskEngine, get_engine
+from ml.risk_analyzer import get_analyzer
 
-# ============================================================================
+
 # LOGGING SETUP
-# ============================================================================
-
 logging.basicConfig(
     level=LOGGING_CONFIG['level'],
     format=LOGGING_CONFIG['format'],
@@ -32,13 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
+
 # FASTAPI APP
-# ============================================================================
+
 
 app = FastAPI(
-    title="Recoverly Risk Monitoring API",
-    description="Backend system for real-time psychological risk detection in peer support conversations",
+    title=f"{SERVICE_NAME} API",
+    description="Agentic Support and Peer Network Facilitator - Real-time psychological risk detection",
     version="1.0.0"
 )
 
@@ -51,15 +50,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================================
+
 # REQUEST/RESPONSE MODELS
-# ============================================================================
+
 
 class MessageRequest(BaseModel):
     """Request body for message analysis"""
     user_id: str = Field(..., description="Unique user identifier")
     message_text: str = Field(..., description="Message content", min_length=1)
     conversation_type: str = Field(default="buddy", description="'buddy' or 'counselor'")
+    recipient_id: Optional[str] = Field(default=None, description="Recipient user ID")
     timestamp: Optional[datetime] = Field(default=None, description="Message timestamp (ISO format)")
 
 
@@ -77,9 +77,9 @@ class MessagePrediction(BaseModel):
 class MessageResponse(BaseModel):
     """Response after analyzing a message"""
     message_id: int
+    prediction_id: int
     user_id: str
     predictions: MessagePrediction
-    message_level_risk: str  # Not used for interventions, just FYI
     timestamp: datetime
 
 
@@ -95,41 +95,48 @@ class UserRiskProfile(BaseModel):
     trends: dict
     last_updated: datetime
 
+class OneToOneConversationRequest(BaseModel):
+    other_user_id: str
+    conversation_type: str = Field(..., pattern="^(buddy|counselor)$")
 
-class InterventionRecommendation(BaseModel):
-    """Recommended intervention for a user"""
-    user_id: str
-    risk_label: str
-    intervention_type: str
-    message: str
-    urgency: str
-    context: dict
+class SendChatMessageRequest(BaseModel):
+    text: str = Field(..., min_length=1)
 
 
-# ============================================================================
+# class InterventionRecommendation(BaseModel):
+#     """Recommended intervention for a user"""
+#     user_id: str
+#     risk_label: str
+#     intervention_type: str
+#     message: str
+#     urgency: str
+#     context: dict
+
 # AUTHENTICATION (Simple API Key)
-# ============================================================================
+
 
 async def verify_api_key(x_api_key: str = Header(...)):
     """
     Verify API key from mobile app
     In production: use proper authentication (JWT, OAuth2)
     """
-    if x_api_key != RECOVERLY_APP_CONFIG['api_key']:
+    if x_api_key != MOBILE_APP_CONFIG['api_key']:
         logger.warning(f"Invalid API key attempt: {x_api_key}")
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
+def get_user_id(x_user_id: str = Header(..., alias="X-User-Id")):
+    return x_user_id
 
-# ============================================================================
 # ENDPOINTS
-# ============================================================================
+
 
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {
-        "service": "Recoverly Risk Monitoring API",
+        "service": SERVICE_NAME,
+        "component": "Agentic Social Support and Peer Network Facilitator",
         "status": "operational",
         "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
@@ -143,9 +150,15 @@ async def analyze_message(
 ):
     """
     Analyze a single message and store predictions
+    Called by Recoverly mobile app when user sends a message
     
-    This endpoint is called by the Recoverly mobile app whenever
-    a user sends a message (to buddies or counselors)
+    Workflow:
+    1. Ensure user exists in core.users
+    2. Run ML models (risk + isolation detection)
+    3. Store message in core.messages
+    4. Store predictions in social.message_predictions
+    5. Return predictions to app    
+
     """
     try:
         logger.info(f"Analyzing message from user: {request.user_id}")
@@ -153,27 +166,53 @@ async def analyze_message(
         # Get analyzer and engine
         analyzer = get_analyzer()
         engine = get_engine()
+
+        # Ensure user exists in core.users (important for FK constraint)
+        engine.ensure_user_exists(request.user_id)
         
         # Run ML models
         predictions = analyzer.analyze_message(request.message_text)
+        logger.debug(f"Predictions: {predictions}")
         
         # Store in database
-        message_id = engine.store_message_prediction(
+        message_id, prediction_id = engine.store_message_with_prediction(
             user_id=request.user_id,
             message_text=request.message_text,
             predictions=predictions,
             conversation_type=request.conversation_type,
+            recipient_id=request.recipient_id,
             timestamp=request.timestamp
         )
         
         logger.info(f"Stored message {message_id} for user {request.user_id}")
+
+        # AUTO-UPDATE USER RISK PROFILE
+
+        thresholds = analyzer.get_thresholds()
+        profile = engine.update_user_risk_profile(request.user_id,thresholds)
+        
+        logger.info(f"Updated risk profile: {profile['current_risk_label']}")
+
+        # AUTO-TRIGGER RISK CHECK (if message has high risk)
+        if predictions['risk_score'] > 0.7:  # Threshold
+            logger.info(f"High-risk message detected - triggering intervention check")
+            
+            # Update risk profile
+            profile = engine.update_user_risk_profile(request.user_id, thresholds)
+            
+            # Trigger agent
+            agent = get_agent(engine)
+            actions = agent.process_user(profile)
+            
+            logger.info(f"Auto-triggered {len(actions)} interventions")
         
         # Return results
         return MessageResponse(
             message_id=message_id,
+            prediction_id=prediction_id,
             user_id=request.user_id,
             predictions=MessagePrediction(**predictions),
-            message_level_risk="informational_only",  # Not used for decisions
+            # message_level_risk="informational_only",  # Not used for decisions
             timestamp=request.timestamp or datetime.now()
         )
         
@@ -190,8 +229,11 @@ async def get_user_risk(
     """
     Get complete risk profile for a user
     
-    This triggers temporal aggregation and returns the user's
-    current risk state based on all recent messages
+    Triggers temporal aggregation:
+    - Analyzes last 7-30 days of messages
+    - Computes risk trends
+    - Detects engagement patterns
+    - Returns final risk label (HIGH/MODERATE/LOW/ISOLATION)
     """
     try:
         logger.info(f"Computing risk profile for user: {user_id}")
@@ -203,6 +245,8 @@ async def get_user_risk(
         
         # Compute risk profile
         profile = engine.update_user_risk_profile(user_id, thresholds)
+
+        logger.info(f"User {user_id}: {profile['current_risk_label']}")
         
         return UserRiskProfile(**profile)
         
@@ -225,7 +269,7 @@ async def trigger_risk_check(
     - When a user logs in (to catch silent users)
     """
     try:
-        logger.info(f"Triggered risk check for user: {user_id}")
+        logger.info(f"Manual risk check triggered for: {user_id}")
         
         # Get engine and analyzer
         engine = get_engine()
@@ -235,12 +279,14 @@ async def trigger_risk_check(
         # Compute risk profile
         profile = engine.update_user_risk_profile(user_id, thresholds)
         
-        # TODO (Week 2-3): Trigger intervention agent here
-        # intervention_agent.process_user(profile)
+        # Trigger intervention agent
+        agent = get_agent(engine)
+        actions = agent.process_user(profile)
         
         return {
             "user_id": user_id,
             "risk_label": profile['current_risk_label'],
+            "reasons": profile['reasons'],
             "check_completed": True,
             "timestamp": datetime.now().isoformat()
         }
@@ -266,6 +312,8 @@ async def get_users_needing_checkin(
         
         engine = get_engine()
         silent_users = engine.get_users_needing_check_in(days_silent)
+
+        logger.info(f"Found {len(silent_users)} users needing check-in")
         
         return {
             "silent_user_count": len(silent_users),
@@ -320,7 +368,7 @@ async def get_system_stats(
         # Count by risk label
         risk_distribution = {}
         for profile in profiles:
-            label = profile['risk_label']
+            label = profile.get('risk_label', 'UNKNOWN')
             risk_distribution[label] = risk_distribution.get(label, 0) + 1
         
         return {
@@ -337,61 +385,131 @@ async def get_system_stats(
         logger.error(f"Error getting stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/chat/conversations/one-to-one")
+async def create_or_get_one_to_one(
+    body: OneToOneConversationRequest,
+    user_id: str = Depends(get_user_id),
+    api_key: str = Depends(verify_api_key)
+):
+    engine = get_engine()
+    engine.ensure_user_exists(user_id)
+    engine.ensure_user_exists(body.other_user_id)
 
-# ============================================================================
+    cid = engine.get_or_create_one_to_one_conversation(user_id, body.other_user_id, body.conversation_type)
+    return {"conversation_id": cid}
+
+
+@app.get("/chat/conversations")
+async def list_my_conversations(
+    user_id: str = Depends(get_user_id),
+    api_key: str = Depends(verify_api_key)
+):
+    engine = get_engine()
+    return {"conversations": engine.list_conversations_for_user(user_id)}
+
+
+@app.get("/chat/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: int,
+    limit: int = 50,
+    user_id: str = Depends(get_user_id),
+    api_key: str = Depends(verify_api_key)
+):
+    engine = get_engine()
+    engine.assert_user_in_conversation(conversation_id, user_id)
+    return {"messages": engine.get_messages(conversation_id, limit)}
+
+
+@app.post("/chat/conversations/{conversation_id}/messages")
+async def send_message_rest(
+    conversation_id: int,
+    body: SendChatMessageRequest,
+    user_id: str = Depends(get_user_id),
+    api_key: str = Depends(verify_api_key)
+):
+    engine = get_engine()
+    engine.assert_user_in_conversation(conversation_id, user_id)
+
+    recipient_id = engine.get_other_participant(conversation_id, user_id)
+
+    analyzer = get_analyzer()
+    predictions = analyzer.analyze_message(body.text)
+
+    # IMPORTANT: set conversation_type from DB (recommended)
+    # For MVP, you can pass "buddy" and later fix.
+    conversation_type = "buddy"
+
+    message_id, prediction_id = engine.store_message_with_prediction(
+        user_id=user_id,
+        message_text=body.text,
+        predictions=predictions,
+        conversation_type=conversation_type,
+        recipient_id=recipient_id,
+        conversation_id=conversation_id
+    )
+
+    # profile + intervention logic (your existing)
+    thresholds = analyzer.get_thresholds()
+    profile = engine.update_user_risk_profile(user_id, thresholds)
+    if predictions["risk_score"] > 0.7:
+        agent = get_agent(engine)
+        agent.process_user(profile)
+
+    return {"message_id": message_id, "prediction_id": prediction_id}
+
 # STARTUP/SHUTDOWN
-# ============================================================================
+
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    logger.info("=" * 80)
-    logger.info("Starting Recoverly Risk Monitoring API")
-    logger.info("=" * 80)
     
-    # Pre-load models (ensures they're ready)
+    logger.info(f"Starting {SERVICE_NAME}")
+    logger.info(f"Agentic Support and Peer Network Facilitator")
+    
+    # Pre-load models 
     try:
         analyzer = get_analyzer()
-        logger.info("✓ ML models loaded")
+        logger.info("ML models loaded")
     except Exception as e:
-        logger.error(f"✗ Failed to load models: {e}")
+        logger.error(f"Failed to load models: {e}")
         raise
     
     # Test database connection
     try:
         engine = get_engine()
-        logger.info("✓ Database connected")
+        logger.info("Database connected")
     except Exception as e:
-        logger.error(f"✗ Failed to connect to database: {e}")
+        logger.error(f"Failed to connect to database: {e}")
         raise
     
-    logger.info("✓ API is ready to receive requests")
-    logger.info("=" * 80)
+    logger.info("API is ready to receive requests")
+    
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    logger.info("Shutting down Recoverly Risk Monitoring API")
+    logger.info(f"Shutting down {SERVICE_NAME}")
     
     # Close database connections
     try:
         engine = get_engine()
         engine.close()
-        logger.info("✓ Database connections closed")
+        logger.info("Database connections closed")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
 
 
-# ============================================================================
+
 # RUN SERVER
-# ============================================================================
+
 
 if __name__ == "__main__":
     import uvicorn
     
     uvicorn.run(
-        "app:app",
+        "routes:app",
         host=API_CONFIG['host'],
         port=API_CONFIG['port'],
         reload=API_CONFIG['reload'],

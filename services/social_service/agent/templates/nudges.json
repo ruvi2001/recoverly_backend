@@ -1,0 +1,34 @@
+{
+    "buddy_connection": [
+        "Hey! {buddy_name} mentioned they'd love to catch up with you. 💙",
+        "{buddy_name} is online right now—want to say hi?",
+        "You've got {num_buddies} buddies thinking of you. Reach out anytime!",
+        "Quick check: how are you doing today? Your support network is here. 🤝"
+    ],
+    "positive_reinforcement": [
+        "You're doing great—keep it up! 🎉",
+        "{days_sober} days of progress! That's awesome. 💪",
+        "Your commitment is inspiring. Keep going!",
+        "Proud of how far you've come. You've got this! ⭐"
+    ],
+    "counselor_encouragement": [
+        "Your counselor has office hours this week. Want to schedule a quick check-in?",
+        "It might help to talk to {counselor_name}. They're here to support you.",
+        "Quick reminder: Your counselor is available if you need someone to talk to."
+    ],
+    "buddy_suggestion_isolation": [
+        "Feeling down? Connecting with friends can help. Want to reach out to {buddy_name}?",
+        "You're not alone. {num_buddies} people in your network care about you.",
+        "Small steps: sending just one message can make a big difference. Try it?"
+    ],
+    "group_activity": [
+        "There's a group meditation session tonight at 7pm—{num_attending} of your buddies are joining!",
+        "Weekly peer support group meets tomorrow. Join us?",
+        "Group walk happening this weekend. Want to come along?"
+    ],
+    "coping_exercise": [
+        "Feeling stressed? Here's a 3-minute grounding exercise that helped others.",
+        "Try this: 5-4-3-2-1 method for anxiety. Want to learn it?",
+        "Quick mindfulness check: Take 3 deep breaths. You've got this. 🧘"
+    ]
+}
