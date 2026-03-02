@@ -755,7 +755,9 @@ class TemporalRiskEngine:
             WHERE p.user_id = %s
             ORDER BY COALESCE(m.timestamp, c.created_at) DESC
         """, (user_id, user_id))
-        return cursor.fetchall()
+            
+            rows = cursor.fetchall()
+            return rows
 
     def get_messages(self, conversation_id: int, limit: int = 50):
         with self.get_cursor() as cursor:
@@ -766,7 +768,9 @@ class TemporalRiskEngine:
                 ORDER BY timestamp ASC
                 LIMIT %s
             """, (conversation_id, limit))
-            return cursor.fetchall()
+
+            rows = cursor.fetchall()
+            return rows
 
 # Singleton instance
 _engine_instance = None

@@ -5,7 +5,7 @@ Handles incoming messages from the mobile app and returns risk assessments
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, constr
 from typing import Optional, List
 from datetime import datetime
 from agent.intervention_agent import get_agent
@@ -14,6 +14,21 @@ import logging
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
+
+BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../recoverly_backend
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+import uuid
+from pydantic import EmailStr
+from shared.auth.jwt_utils import hash_password, verify_password, create_access_token
+from shared.auth.dependencies import get_current_user_id
+from shared.auth.user_repo import (
+    get_user_by_email,
+    get_credentials_by_user_id,
+    create_user_and_credentials,
+    touch_last_login,
+)
 
 from core.config import API_CONFIG, MOBILE_APP_CONFIG, LOGGING_CONFIG, SERVICE_NAME
 from db.temporal_engine import TemporalRiskEngine, get_engine
@@ -114,6 +129,22 @@ class SendChatMessageRequest(BaseModel):
 
 # AUTHENTICATION (Simple API Key)
 
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password:str = Field(min_length=1)
+    full_name: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1)
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user_id: str
+    email: EmailStr
+    full_name: Optional[str] = None
+
 
 async def verify_api_key(x_api_key: str = Header(...)):
     """
@@ -125,8 +156,8 @@ async def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
-def get_user_id(x_user_id: str = Header(..., alias="X-User-Id")):
-    return x_user_id
+def get_user_id_from_token(user_id: str = Depends(get_current_user_id)):
+    return user_id
 
 # ENDPOINTS
 
@@ -141,6 +172,84 @@ async def root():
         "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
     }
+
+@app.post("/auth/register", response_model=AuthResponse)
+async def register(req: RegisterRequest):
+    existing = get_user_by_email(req.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    username = req.email.split("@")[0]
+
+    from fastapi import HTTPException
+
+    pw_hash = hash_password(req.password)
+ 
+    create_user_and_credentials(
+        user_id=user_id,
+        email=req.email,
+        username=username,
+        full_name=req.full_name,
+        password_hash=pw_hash,
+    )
+
+    token = create_access_token(user_id)
+    return AuthResponse(token=token, user_id=user_id, email=req.email, full_name=req.full_name)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(req: LoginRequest):
+    user = get_user_by_email(req.email)
+    if not user or user.get("status") != "active":
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    creds = get_credentials_by_user_id(user["user_id"])
+    if not creds:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(req.password, creds["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    touch_last_login(user["user_id"])
+
+    token = create_access_token(user["user_id"])
+    return AuthResponse(
+        token=token,
+        user_id=user["user_id"],
+        email=user["email"],
+        full_name=user.get("full_name"),
+    )
+
+
+@app.get("/auth/me")
+async def me(user_id: str = Depends(get_current_user_id)):
+    # You can return full profile later; keep it simple now
+    # reuse repo to fetch by email isn't possible here, so query by id quickly:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    from shared.core.settings import settings
+
+    conn = psycopg2.connect(
+        host=settings.DB_HOST,
+        port=settings.DB_PORT,
+        dbname=settings.DB_NAME,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        options="-c search_path=core",
+    )
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT user_id, email, full_name, status FROM core.users WHERE user_id=%s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="User not found")
+            return row
+    finally:
+        conn.close()
 
 
 @app.post("/api/v1/analyze-message", response_model=MessageResponse)
@@ -388,7 +497,7 @@ async def get_system_stats(
 @app.post("/chat/conversations/one-to-one")
 async def create_or_get_one_to_one(
     body: OneToOneConversationRequest,
-    user_id: str = Depends(get_user_id),
+    user_id: str = Depends(get_user_id_from_token),
     api_key: str = Depends(verify_api_key)
 ):
     engine = get_engine()
@@ -401,7 +510,7 @@ async def create_or_get_one_to_one(
 
 @app.get("/chat/conversations")
 async def list_my_conversations(
-    user_id: str = Depends(get_user_id),
+    user_id: str = Depends(get_user_id_from_token),
     api_key: str = Depends(verify_api_key)
 ):
     engine = get_engine()
@@ -412,7 +521,7 @@ async def list_my_conversations(
 async def get_conversation_messages(
     conversation_id: int,
     limit: int = 50,
-    user_id: str = Depends(get_user_id),
+    user_id: str = Depends(get_user_id_from_token),
     api_key: str = Depends(verify_api_key)
 ):
     engine = get_engine()
@@ -424,7 +533,7 @@ async def get_conversation_messages(
 async def send_message_rest(
     conversation_id: int,
     body: SendChatMessageRequest,
-    user_id: str = Depends(get_user_id),
+    user_id: str = Depends(get_user_id_from_token),
     api_key: str = Depends(verify_api_key)
 ):
     engine = get_engine()
