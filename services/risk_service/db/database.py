@@ -2,78 +2,57 @@ import asyncio
 import logging
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    AsyncSession,
-    async_sessionmaker,
-)
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-from app.core.config import DATABASE_URL
-from app.db import Base
-
-# ✅ IMPORTANT: import only the models you want registered in Base.metadata
-# (This prevents SQLAlchemy from trying to map RelapseFollowup)
-from app.db.models import (  # noqa: F401
+# IMPORTANT: use package-relative imports so "python -m ..." works
+from . import Base
+from .models import (  # noqa: F401
     Patient,
     Assessment,
     RiskPrediction,
-    XaiExplanation,
     WeeklyRelapseCheckin,
+    Placeholder,
 )
 
-logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("risk_db_init")
 
-# -----------------------------------------------------------------------------
-# Engine
-# -----------------------------------------------------------------------------
+# ✅ Hard-coded async DB URL (no .env needed)
+DATABASE_URL = "postgresql+asyncpg://postgres:piumi1234@localhost:5432/recoverly_platform"
+
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,  # set False in production
+    echo=True,          # set False in production
     pool_pre_ping=True,
 )
 
-# -----------------------------------------------------------------------------
-# Session Factory
-# -----------------------------------------------------------------------------
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
 
-# -----------------------------------------------------------------------------
-# Dependency (for FastAPI routes)
-# -----------------------------------------------------------------------------
+# FastAPI dependency (if you want to use this in routes later)
 async def get_db():
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        yield session
 
-# -----------------------------------------------------------------------------
-# Create Schema + Tables
-# -----------------------------------------------------------------------------
+
 async def init_db():
     async with engine.begin() as conn:
         # Ensure schema exists
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS risk"))
         logger.info("✓ Schema 'risk' ready")
 
-        # Create only the tables for imported models
+        # Create tables defined in models (won't recreate if they already exist)
         await conn.run_sync(Base.metadata.create_all)
-        logger.info("✓ Risk tables created")
+        logger.info("✓ Tables created / verified")
 
-# -----------------------------------------------------------------------------
-# Close engine
-# -----------------------------------------------------------------------------
+
 async def close_db():
     await engine.dispose()
-    logger.info("✓ Database engine closed")
+    logger.info("✓ Engine disposed")
 
-# -----------------------------------------------------------------------------
-# Allow running this file directly to create tables
-# -----------------------------------------------------------------------------
+
 if __name__ == "__main__":
     asyncio.run(init_db())

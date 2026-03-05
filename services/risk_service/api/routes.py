@@ -1,6 +1,6 @@
 # services/risk_service/api/routes.py
 
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
@@ -43,17 +43,14 @@ from ml.risk_analyzer import init_analyzer
 # Helpers
 # ============================================================
 def utcnow_naive() -> datetime:
-    """Use for DB columns that are TIMESTAMP WITHOUT TIME ZONE."""
     return datetime.utcnow()
 
 
 def utcnow_aware() -> datetime:
-    """Use for timezone-aware columns (reported_at is timezone=True)."""
     return datetime.now(timezone.utc)
 
 
 def pg_week_start_date(expr) -> "Date":
-    """DATE of week start (Mon) in Postgres for timestamp expr."""
     return cast(func.date_trunc("week", expr), Date)
 
 
@@ -77,7 +74,7 @@ async def startup_event():
 
 
 # ============================================================
-# AUTH  (✅ MODIFIED TO MATCH YOUR 2ND FRONTEND CODE SET)
+# AUTH
 # ============================================================
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -94,7 +91,6 @@ class LoginIn(BaseModel):
     password: str
 
 
-# ✅ This is what your 2nd frontend expects from /login and /register
 class AuthResponse(BaseModel):
     token: str
     user_id: str
@@ -103,7 +99,6 @@ class AuthResponse(BaseModel):
     role: str
 
 
-# Keep /me response model (optional but useful)
 class MeOut(BaseModel):
     user_id: str
     email: EmailStr
@@ -223,21 +218,21 @@ router = APIRouter(
 
 
 def _risk_category(rp: float) -> str:
-    if rp >= HIGH_MAX:
+    if rp >= float(HIGH_MAX):
         return "VERY HIGH RISK"
-    if rp >= MOD_MAX:
+    if rp >= float(MOD_MAX):
         return "HIGH RISK"
-    if rp >= LOW_MAX:
+    if rp >= float(LOW_MAX):
         return "MODERATE RISK"
     return "LOW RISK"
 
 
 def _risk_emoji(rp: float) -> str:
-    if rp >= HIGH_MAX:
+    if rp >= float(HIGH_MAX):
         return "🔴"
-    if rp >= MOD_MAX:
+    if rp >= float(MOD_MAX):
         return "🟠"
-    if rp >= LOW_MAX:
+    if rp >= float(LOW_MAX):
         return "🟡"
     return "🟢"
 
@@ -307,7 +302,7 @@ async def get_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # -------------------------
-# ✅ WEEKLY TRENDS (FIXED)
+# WEEKLY TRENDS
 # -------------------------
 class WeeklyTrendPoint(BaseModel):
     week_start: str
@@ -365,62 +360,55 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
     return out
 
 
-# -------------------------
-# HISTORY
-# -------------------------
-class HistoryItem(BaseModel):
-    assessment_id: int
-    date: str
-    risk_percent: float
-    category: str
-    emoji: str
-
-
-@router.get("/history/{patient_id}", response_model=List[HistoryItem])
-async def get_history(patient_id: str, db: AsyncSession = Depends(get_db)):
-    q = (
-        select(Assessment, RiskPrediction)
-        .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
-        .where(Assessment.patient_id == patient_id)
-        .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
-    )
-
-    rows = (await db.execute(q)).all()
-
-    items: List[HistoryItem] = []
-    for a, rp in rows:
-        risk_percent = float(rp.predicted_risk_percent)
-        items.append(
-            HistoryItem(
-                assessment_id=a.assessment_id,
-                date=str(a.assessment_date),
-                risk_percent=risk_percent,
-                category=_risk_category(risk_percent),
-                emoji=_risk_emoji(risk_percent),
-            )
-        )
-    return items
-
-
+# ============================================================
+# POPUP RULE (your weekly relapse popup)
+# - needs >=2 assessments
+# - only once per week
+# - only if latest risk >= MOD_MAX
+# Uses DB column: weekly_relapse_checkins.week_start
+# ============================================================
 @router.get("/should-show-popup/{patient_id}")
 async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get_db)):
-    q = (
-        select(Assessment, RiskPrediction)
-        .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
+    if not await db.get(Patient, patient_id):
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    n_assess = (await db.execute(
+        select(func.count(Assessment.assessment_id)).where(Assessment.patient_id == patient_id)
+    )).scalar_one()
+
+    if int(n_assess) < 2:
+        return {"should_show": False, "reason": "need_previous_assessment"}
+
+    latest = (await db.execute(
+        select(RiskPrediction.predicted_risk_percent)
+        .join(Assessment, RiskPrediction.assessment_id == Assessment.assessment_id)
         .where(Assessment.patient_id == patient_id)
         .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
         .limit(1)
-    )
+    )).scalar_one_or_none()
 
-    row = (await db.execute(q)).first()
-    if not row:
-        return {"should_show": False}
+    if latest is None:
+        return {"should_show": False, "reason": "no_prediction"}
 
-    _, rp = row
-    risk_percent = float(rp.predicted_risk_percent)
+    risk_percent = float(latest)
+    if risk_percent < float(MOD_MAX):
+        return {"should_show": False, "reason": "below_threshold"}
+
+    this_week = cast(func.date_trunc("week", func.now()), Date)
+
+    already = (await db.execute(
+        select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
+            WeeklyRelapseCheckin.patient_id == patient_id,
+            WeeklyRelapseCheckin.week_start == this_week,
+        )
+    )).scalar_one()
+
+    if int(already) > 0:
+        return {"should_show": False, "reason": "already_asked_this_week"}
 
     return {
-        "should_show": risk_percent >= float(MOD_MAX),
+        "should_show": True,
+        "week_start": str(this_week),
         "risk_percent": risk_percent,
         "category": _risk_category(risk_percent),
         "emoji": _risk_emoji(risk_percent),
@@ -432,26 +420,16 @@ async def should_show_weekly_relapse_popup(patient_id: str, db: AsyncSession = D
     if not await db.get(Patient, patient_id):
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    n_assess = (await db.execute(
-        select(func.count(Assessment.assessment_id)).where(Assessment.patient_id == patient_id)
-    )).scalar_one()
-
-    if int(n_assess) == 0:
-        return {"should_show": False, "reason": "no_assessments_yet"}
-
-    this_week = pg_week_start_date(func.now())
+    this_week = cast(func.date_trunc("week", func.now()), Date)
 
     already = (await db.execute(
         select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
             WeeklyRelapseCheckin.patient_id == patient_id,
-            pg_week_start_date(WeeklyRelapseCheckin.reported_at) == this_week,
+            WeeklyRelapseCheckin.week_start == this_week,
         )
     )).scalar_one()
 
-    return {
-        "should_show": int(already) == 0,
-        "week_start": str(date.today().fromordinal(date.today().toordinal() - date.today().weekday())),
-    }
+    return {"should_show": int(already) == 0, "week_start": str(this_week)}
 
 
 class RelapseReportIn(BaseModel):
@@ -465,33 +443,35 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="Patient not found")
 
     v = 1 if int(body.relapsed) == 1 else 0
-    this_week = pg_week_start_date(func.now())
+    this_week = cast(func.date_trunc("week", func.now()), Date)
+    now = utcnow_aware()
 
     existing = (await db.execute(
         select(WeeklyRelapseCheckin).where(
             WeeklyRelapseCheckin.patient_id == body.patient_id,
-            pg_week_start_date(WeeklyRelapseCheckin.reported_at) == this_week,
-        ).order_by(desc(WeeklyRelapseCheckin.checkin_id)).limit(1)
+            WeeklyRelapseCheckin.week_start == this_week,
+        )
+        .order_by(desc(WeeklyRelapseCheckin.checkin_id))
+        .limit(1)
     )).scalar_one_or_none()
-
-    now = utcnow_aware()
 
     if existing:
         existing.actual_relapse = v
         existing.reported_at = now
+        existing.week_start = this_week
     else:
         db.add(
             WeeklyRelapseCheckin(
                 patient_id=body.patient_id,
                 actual_relapse=v,
                 reported_at=now,
+                week_start=this_week,
             )
         )
 
     await db.commit()
-    return {"ok": True, "patient_id": body.patient_id, "relapsed": bool(v)}
+    return {"ok": True, "patient_id": body.patient_id, "relapsed": bool(v), "week_start": str(this_week)}
 
 
-# mount routers
 app.include_router(auth_router)
 app.include_router(router)
