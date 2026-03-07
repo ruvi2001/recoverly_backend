@@ -1,23 +1,14 @@
 from datetime import date, datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field, conint
+from typing import Optional
+from datetime import datetime
 
 Feature = conint(ge=1, le=7)
 
-class PatientCreate(BaseModel):
-    patient_id: str
-    age: int = Field(..., gt=0, lt=130)
-    days_since_last_use: int = Field(..., ge=0)
-
-class PatientResponse(BaseModel):
-    patient_id: str
-    age: int
-    days_since_last_use: int
-    created_at: datetime
-    model_config = {"from_attributes": True}
 
 class AssessmentInput(BaseModel):
-    patient_id: str
+    user_id: str
     assessment_date: date = Field(default_factory=date.today)
 
     self_efficacy_doubt: Feature  # type: ignore
@@ -32,12 +23,22 @@ class AssessmentInput(BaseModel):
     recovery_actions: Feature  # type: ignore
 
     def features_dict(self):
-        return {f: getattr(self, f) for f in [
-            "self_efficacy_doubt", "emotional_distress", "anger_irritability",
-            "unclear_thinking", "poor_concentration", "feeling_trapped",
-            "sleep_disturbance", "craving_thoughts", "relapse_ideation",
-            "recovery_actions",
-        ]}
+        return {
+            f: getattr(self, f)
+            for f in [
+                "self_efficacy_doubt",
+                "emotional_distress",
+                "anger_irritability",
+                "unclear_thinking",
+                "poor_concentration",
+                "feeling_trapped",
+                "sleep_disturbance",
+                "craving_thoughts",
+                "relapse_ideation",
+                "recovery_actions",
+            ]
+        }
+
 
 class XaiItem(BaseModel):
     feature_name: str
@@ -45,70 +46,44 @@ class XaiItem(BaseModel):
     contribution: float
     rank: int
 
+
 class AssessmentResult(BaseModel):
     assessment_id: int
-    patient_id: str
+    user_id: str
     assessment_date: date
     prediction_id: int
     predicted_label: int
     predicted_risk_percent: float
+    risk_level: str
     category: str
     emoji: str
     total_score: int
     model_version: str
     xai: List[XaiItem]
+
     model_config = {"protected_namespaces": ()}
 
-class FollowupCreate(BaseModel):
-    assessment_id: int
-    actual_relapse: conint(ge=0, le=1)  # type: ignore
-
-class FollowupResponse(BaseModel):
-    followup_id: int
-    assessment_id: int
-    actual_relapse: int
-    reported_at: datetime
-    model_config = {"from_attributes": True}
-
-class HistoryEntry(BaseModel):
-    assessment_id: int
-    assessment_date: date
-    predicted_label: Optional[int] = None
-    predicted_risk_percent: Optional[float] = None
-    category: Optional[str] = None
-    actual_relapse: Optional[int] = None
-    xai: List[XaiItem] = []
-
-class MonitoringSummary(BaseModel):
-    trend: str
-    emoji: str
-    recent_change: Optional[float] = None
-    alert: Optional[str] = None
-    weeks_tracked: int
-    total_relapses: int
-
-class HistoryResponse(BaseModel):
-    summary: MonitoringSummary
-    history: List[HistoryEntry]
 
 class WeeklyCheckinCreate(BaseModel):
-    patient_id: str
+    user_id: str
     actual_relapse: conint(ge=0, le=1)  # type: ignore
+
 
 class WeeklyCheckinResponse(BaseModel):
     checkin_id: int
-    patient_id: str
+    user_id: str
     actual_relapse: int
     reported_at: datetime
-    model_config = {"from_attributes": True
 
-}
+    model_config = {"from_attributes": True}
+
 
 class DailyTrendPoint(BaseModel):
     day: date
     risk_percent: Optional[float] = None
     category: Optional[str] = None
     relapse_this_week: bool = False
+
 
 class WeeklyTrendPoint(BaseModel):
     week_start: date
@@ -120,7 +95,23 @@ class WeeklyTrendPoint(BaseModel):
     recent_change: Optional[float] = None
     alert: Optional[str] = None
 
+
 class TrendResponse(BaseModel):
-    patient_id: str
+    user_id: str
     days: List[DailyTrendPoint]
     weeks: List[WeeklyTrendPoint]
+
+
+class HistoryEntry(BaseModel):
+    assessment_date: datetime
+    predicted_risk_percent: Optional[float] = None
+    actual_relapse: Optional[int] = None
+
+
+class MonitoringSummary(BaseModel):
+    trend: str
+    emoji: str
+    recent_change: Optional[float] = None
+    alert: Optional[str] = None
+    weeks_tracked: int
+    total_relapses: int

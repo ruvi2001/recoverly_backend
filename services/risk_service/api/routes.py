@@ -1,5 +1,4 @@
-# services/risk_service/api/routes.py
-
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -12,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.temporal_engine import get_db
 from db.models import (
-    Patient,
     Assessment,
     RiskPrediction,
     WeeklyRelapseCheckin,
@@ -32,16 +30,11 @@ from engine.monitoring_engine import LOW_MAX, MOD_MAX, HIGH_MAX
 from api.schemas import (
     AssessmentInput,
     AssessmentResult,
-    PatientCreate,
-    PatientResponse,
 )
 
 from ml.risk_analyzer import init_analyzer
 
 
-# ============================================================
-# Helpers
-# ============================================================
 def utcnow_naive() -> datetime:
     return datetime.utcnow()
 
@@ -54,9 +47,6 @@ def pg_week_start_date(expr) -> "Date":
     return cast(func.date_trunc("week", expr), Date)
 
 
-# ============================================================
-# FastAPI app
-# ============================================================
 app = FastAPI(title="Recoverly Risk Service")
 
 app.add_middleware(
@@ -73,9 +63,6 @@ async def startup_event():
     init_analyzer()
 
 
-# ============================================================
-# AUTH
-# ============================================================
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -114,14 +101,17 @@ def _role_of(u: User) -> str:
 async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
     email = body.email.lower().strip()
 
-    existing = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    existing = (
+        await db.execute(select(User).where(User.email == email))
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     now = utcnow_naive()
+    new_user_id = f"user_{uuid.uuid4().hex[:12]}"
 
     user = User(
-        user_id=f"p_{email}",
+        user_id=new_user_id,
         email=email,
         full_name=body.full_name,
         status="active",
@@ -133,7 +123,7 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
     await db.flush()
 
     cred = UserCredentials(
-        user_id=user.user_id,
+        user_id=new_user_id,
         password_hash=hash_password(body.password),
         created_at=now,
         updated_at=now,
@@ -158,7 +148,9 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
 async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
     email = body.email.lower().strip()
 
-    u = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    u = (
+        await db.execute(select(User).where(User.email == email))
+    ).scalar_one_or_none()
     if not u:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -207,9 +199,6 @@ async def me(current: User = Depends(get_current_patient)):
     )
 
 
-# ============================================================
-# RISK ROUTES
-# ============================================================
 router = APIRouter(
     prefix="/risk",
     tags=["Risk"],
@@ -237,26 +226,14 @@ def _risk_emoji(rp: float) -> str:
     return "🟢"
 
 
-@router.post("/patients", response_model=PatientResponse, status_code=201)
-async def create_patient(body: PatientCreate, db: AsyncSession = Depends(get_db)):
-    if await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=409, detail="Patient already exists")
-
-    p = Patient(**body.model_dump())
-    db.add(p)
-    await db.commit()
-    await db.refresh(p)
-    return p
-
-
 @router.post("/assess", response_model=AssessmentResult, status_code=201)
 async def assess(body: AssessmentInput, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+    if not await db.get(User, body.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     result = await run_assessment(
         db,
-        body.patient_id,
+        body.user_id,
         body.assessment_date,
         body.features_dict(),
     )
@@ -265,9 +242,6 @@ async def assess(body: AssessmentInput, db: AsyncSession = Depends(get_db)):
     return AssessmentResult(**result)
 
 
-# -------------------------
-# DAILY TRENDS
-# -------------------------
 class TrendPoint(BaseModel):
     date: str
     risk_percent: float
@@ -275,12 +249,12 @@ class TrendPoint(BaseModel):
     emoji: str
 
 
-@router.get("/trends/{patient_id}", response_model=List[TrendPoint])
-async def get_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
+@router.get("/trends/{user_id}", response_model=List[TrendPoint])
+async def get_trends(user_id: str, db: AsyncSession = Depends(get_db)):
     q = (
         select(Assessment, RiskPrediction)
         .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
-        .where(Assessment.patient_id == patient_id)
+        .where(Assessment.user_id == user_id)
         .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
         .limit(60)
     )
@@ -294,27 +268,24 @@ async def get_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
             TrendPoint(
                 date=str(a.assessment_date),
                 risk_percent=risk_percent,
-                category=_risk_category(risk_percent),
+                category=rp.risk_level,
                 emoji=_risk_emoji(risk_percent),
             )
         )
     return points
 
 
-# -------------------------
-# WEEKLY TRENDS
-# -------------------------
-class WeeklyTrendPoint(BaseModel):
+class WeeklyTrendPointOut(BaseModel):
     week_start: str
     week_label: str
     avg_risk_percent: float
     relapse_reported: bool
 
 
-@router.get("/weekly-trends/{patient_id}", response_model=List[WeeklyTrendPoint])
-async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+@router.get("/weekly-trends/{user_id}", response_model=List[WeeklyTrendPointOut])
+async def get_weekly_trends(user_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     relapse_week = pg_week_start_date(WeeklyRelapseCheckin.reported_at)
 
@@ -323,7 +294,7 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
             relapse_week.label("week_start"),
             (func.max(cast(WeeklyRelapseCheckin.actual_relapse, Integer)) == 1).label("relapse_reported"),
         )
-        .where(WeeklyRelapseCheckin.patient_id == patient_id)
+        .where(WeeklyRelapseCheckin.user_id == user_id)
         .group_by(relapse_week)
         .subquery()
     )
@@ -339,7 +310,7 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
         )
         .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
         .outerjoin(relapse_sq, relapse_sq.c.week_start == assess_week)
-        .where(Assessment.patient_id == patient_id)
+        .where(Assessment.user_id == user_id)
         .group_by(assess_week, relapse_sq.c.relapse_reported)
         .order_by(desc(assess_week))
         .limit(20)
@@ -347,10 +318,10 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
 
     rows = (await db.execute(q)).all()
 
-    out: List[WeeklyTrendPoint] = []
+    out: List[WeeklyTrendPointOut] = []
     for week_start, avg_risk, relapse_reported, week_label in reversed(rows):
         out.append(
-            WeeklyTrendPoint(
+            WeeklyTrendPointOut(
                 week_start=str(week_start),
                 week_label=str(week_label),
                 avg_risk_percent=float(avg_risk) if avg_risk is not None else 0.0,
@@ -360,32 +331,29 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
     return out
 
 
-# ============================================================
-# POPUP RULE (your weekly relapse popup)
-# - needs >=2 assessments
-# - only once per week
-# - only if latest risk >= MOD_MAX
-# Uses DB column: weekly_relapse_checkins.week_start
-# ============================================================
-@router.get("/should-show-popup/{patient_id}")
-async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+@router.get("/should-show-popup/{user_id}")
+async def should_show_risk_popup(user_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
-    n_assess = (await db.execute(
-        select(func.count(Assessment.assessment_id)).where(Assessment.patient_id == patient_id)
-    )).scalar_one()
+    n_assess = (
+        await db.execute(
+            select(func.count(Assessment.assessment_id)).where(Assessment.user_id == user_id)
+        )
+    ).scalar_one()
 
     if int(n_assess) < 2:
         return {"should_show": False, "reason": "need_previous_assessment"}
 
-    latest = (await db.execute(
-        select(RiskPrediction.predicted_risk_percent)
-        .join(Assessment, RiskPrediction.assessment_id == Assessment.assessment_id)
-        .where(Assessment.patient_id == patient_id)
-        .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
-        .limit(1)
-    )).scalar_one_or_none()
+    latest = (
+        await db.execute(
+            select(RiskPrediction.predicted_risk_percent)
+            .join(Assessment, RiskPrediction.assessment_id == Assessment.assessment_id)
+            .where(Assessment.user_id == user_id)
+            .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     if latest is None:
         return {"should_show": False, "reason": "no_prediction"}
@@ -396,12 +364,14 @@ async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get
 
     this_week = cast(func.date_trunc("week", func.now()), Date)
 
-    already = (await db.execute(
-        select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
-            WeeklyRelapseCheckin.patient_id == patient_id,
-            WeeklyRelapseCheckin.week_start == this_week,
+    already = (
+        await db.execute(
+            select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
+                WeeklyRelapseCheckin.user_id == user_id,
+                WeeklyRelapseCheckin.week_start == this_week,
+            )
         )
-    )).scalar_one()
+    ).scalar_one()
 
     if int(already) > 0:
         return {"should_show": False, "reason": "already_asked_this_week"}
@@ -415,45 +385,50 @@ async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get
     }
 
 
-@router.get("/should-show-weekly-relapse-popup/{patient_id}")
-async def should_show_weekly_relapse_popup(patient_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+@router.get("/should-show-weekly-relapse-popup/{user_id}")
+async def should_show_weekly_relapse_popup(user_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     this_week = cast(func.date_trunc("week", func.now()), Date)
 
-    already = (await db.execute(
-        select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
-            WeeklyRelapseCheckin.patient_id == patient_id,
-            WeeklyRelapseCheckin.week_start == this_week,
+    already = (
+        await db.execute(
+            select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
+                WeeklyRelapseCheckin.user_id == user_id,
+                WeeklyRelapseCheckin.week_start == this_week,
+            )
         )
-    )).scalar_one()
+    ).scalar_one()
 
     return {"should_show": int(already) == 0, "week_start": str(this_week)}
 
 
 class RelapseReportIn(BaseModel):
-    patient_id: str
-    relapsed: int  # 0 or 1
+    user_id: str
+    relapsed: int
 
 
 @router.post("/relapse-report")
 async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+    if not await db.get(User, body.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     v = 1 if int(body.relapsed) == 1 else 0
     this_week = cast(func.date_trunc("week", func.now()), Date)
     now = utcnow_aware()
 
-    existing = (await db.execute(
-        select(WeeklyRelapseCheckin).where(
-            WeeklyRelapseCheckin.patient_id == body.patient_id,
-            WeeklyRelapseCheckin.week_start == this_week,
+    existing = (
+        await db.execute(
+            select(WeeklyRelapseCheckin)
+            .where(
+                WeeklyRelapseCheckin.user_id == body.user_id,
+                WeeklyRelapseCheckin.week_start == this_week,
+            )
+            .order_by(desc(WeeklyRelapseCheckin.checkin_id))
+            .limit(1)
         )
-        .order_by(desc(WeeklyRelapseCheckin.checkin_id))
-        .limit(1)
-    )).scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if existing:
         existing.actual_relapse = v
@@ -462,7 +437,7 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
     else:
         db.add(
             WeeklyRelapseCheckin(
-                patient_id=body.patient_id,
+                user_id=body.user_id,
                 actual_relapse=v,
                 reported_at=now,
                 week_start=this_week,
@@ -470,7 +445,12 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
         )
 
     await db.commit()
-    return {"ok": True, "patient_id": body.patient_id, "relapsed": bool(v), "week_start": str(this_week)}
+    return {
+        "ok": True,
+        "user_id": body.user_id,
+        "relapsed": bool(v),
+        "week_start": str(this_week),
+    }
 
 
 app.include_router(auth_router)
