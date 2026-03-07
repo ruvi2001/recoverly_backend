@@ -12,7 +12,7 @@ if ENV_PATH.exists():
     print(f"✓ [risk_service] Loaded env from: {ENV_PATH}")
 else:
     load_dotenv()  # fallback
-    print(f"⚠️ [risk_service] .env NOT found at: {ENV_PATH} (loaded from current env instead)")
+    print(f"[risk_service] .env NOT found at: {ENV_PATH} (loaded from current env instead)")
 
 DB_HOST = os.getenv("DB_HOST", "localhost").strip()
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
