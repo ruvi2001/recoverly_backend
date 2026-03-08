@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.temporal_engine import get_db
 from db.models import (
-    Patient,
     Assessment,
     RiskPrediction,
     WeeklyRelapseCheckin
@@ -24,16 +23,11 @@ from engine.monitoring_engine import LOW_MAX, MOD_MAX, HIGH_MAX
 from api.schemas import (
     AssessmentInput,
     AssessmentResult,
-    PatientCreate,
-    PatientResponse,
 )
 
 from ml.risk_analyzer import init_analyzer
 
 
-# ============================================================
-# Helpers
-# ============================================================
 def utcnow_naive() -> datetime:
     return datetime.utcnow()
 
@@ -46,9 +40,6 @@ def pg_week_start_date(expr) -> "Date":
     return cast(func.date_trunc("week", expr), Date)
 
 
-# ============================================================
-# FastAPI app
-# ============================================================
 app = FastAPI(title="Recoverly Risk Service")
 
 app.add_middleware(
@@ -94,26 +85,14 @@ def _risk_emoji(rp: float) -> str:
     return "🟢"
 
 
-@router.post("/patients", response_model=PatientResponse, status_code=201)
-async def create_patient(body: PatientCreate, db: AsyncSession = Depends(get_db)):
-    if await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=409, detail="Patient already exists")
-
-    p = Patient(**body.model_dump())
-    db.add(p)
-    await db.commit()
-    await db.refresh(p)
-    return p
-
-
 @router.post("/assess", response_model=AssessmentResult, status_code=201)
 async def assess(body: AssessmentInput, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+    if not await db.get(User, body.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     result = await run_assessment(
         db,
-        body.patient_id,
+        body.user_id,
         body.assessment_date,
         body.features_dict(),
     )
@@ -122,9 +101,6 @@ async def assess(body: AssessmentInput, db: AsyncSession = Depends(get_db)):
     return AssessmentResult(**result)
 
 
-# -------------------------
-# DAILY TRENDS
-# -------------------------
 class TrendPoint(BaseModel):
     date: str
     risk_percent: float
@@ -132,12 +108,12 @@ class TrendPoint(BaseModel):
     emoji: str
 
 
-@router.get("/trends/{patient_id}", response_model=List[TrendPoint])
-async def get_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
+@router.get("/trends/{user_id}", response_model=List[TrendPoint])
+async def get_trends(user_id: str, db: AsyncSession = Depends(get_db)):
     q = (
         select(Assessment, RiskPrediction)
         .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
-        .where(Assessment.patient_id == patient_id)
+        .where(Assessment.user_id == user_id)
         .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
         .limit(60)
     )
@@ -151,27 +127,24 @@ async def get_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
             TrendPoint(
                 date=str(a.assessment_date),
                 risk_percent=risk_percent,
-                category=_risk_category(risk_percent),
+                category=rp.risk_level,
                 emoji=_risk_emoji(risk_percent),
             )
         )
     return points
 
 
-# -------------------------
-# WEEKLY TRENDS
-# -------------------------
-class WeeklyTrendPoint(BaseModel):
+class WeeklyTrendPointOut(BaseModel):
     week_start: str
     week_label: str
     avg_risk_percent: float
     relapse_reported: bool
 
 
-@router.get("/weekly-trends/{patient_id}", response_model=List[WeeklyTrendPoint])
-async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+@router.get("/weekly-trends/{user_id}", response_model=List[WeeklyTrendPointOut])
+async def get_weekly_trends(user_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     relapse_week = pg_week_start_date(WeeklyRelapseCheckin.reported_at)
 
@@ -180,7 +153,7 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
             relapse_week.label("week_start"),
             (func.max(cast(WeeklyRelapseCheckin.actual_relapse, Integer)) == 1).label("relapse_reported"),
         )
-        .where(WeeklyRelapseCheckin.patient_id == patient_id)
+        .where(WeeklyRelapseCheckin.user_id == user_id)
         .group_by(relapse_week)
         .subquery()
     )
@@ -196,7 +169,7 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
         )
         .join(RiskPrediction, RiskPrediction.assessment_id == Assessment.assessment_id)
         .outerjoin(relapse_sq, relapse_sq.c.week_start == assess_week)
-        .where(Assessment.patient_id == patient_id)
+        .where(Assessment.user_id == user_id)
         .group_by(assess_week, relapse_sq.c.relapse_reported)
         .order_by(desc(assess_week))
         .limit(20)
@@ -204,10 +177,10 @@ async def get_weekly_trends(patient_id: str, db: AsyncSession = Depends(get_db))
 
     rows = (await db.execute(q)).all()
 
-    out: List[WeeklyTrendPoint] = []
+    out: List[WeeklyTrendPointOut] = []
     for week_start, avg_risk, relapse_reported, week_label in reversed(rows):
         out.append(
-            WeeklyTrendPoint(
+            WeeklyTrendPointOut(
                 week_start=str(week_start),
                 week_label=str(week_label),
                 avg_risk_percent=float(avg_risk) if avg_risk is not None else 0.0,
@@ -274,10 +247,10 @@ async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get
     }
 
 
-@router.get("/should-show-weekly-relapse-popup/{patient_id}")
-async def should_show_weekly_relapse_popup(patient_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+@router.get("/should-show-weekly-relapse-popup/{user_id}")
+async def should_show_weekly_relapse_popup(user_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     this_week = cast(func.date_trunc("week", func.now()), Date)
 
@@ -294,14 +267,14 @@ async def should_show_weekly_relapse_popup(patient_id: str, db: AsyncSession = D
 
 
 class RelapseReportIn(BaseModel):
-    patient_id: str
-    relapsed: int  # 0 or 1
+    user_id: str
+    relapsed: int
 
 
 @router.post("/relapse-report")
 async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_db)):
-    if not await db.get(Patient, body.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
+    if not await db.get(User, body.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
 
     v = 1 if int(body.relapsed) == 1 else 0
     this_week = cast(func.date_trunc("week", func.now()), Date)
@@ -326,7 +299,7 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
     else:
         db.add(
             WeeklyRelapseCheckin(
-                patient_id=body.patient_id,
+                user_id=body.user_id,
                 actual_relapse=v,
                 reported_at=now,
                 week_start=this_week,

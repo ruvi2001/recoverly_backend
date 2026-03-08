@@ -1,6 +1,8 @@
 import asyncio
 import pickle
 import logging
+from typing import Dict, List, Any, Optional
+
 import numpy as np
 import pandas as pd
 import shap
@@ -24,17 +26,25 @@ QUESTIONNAIRE_FEATURES = [
 ]
 
 MODEL_VERSION = "Relapse_Risk_Estimation_Model_final"
-LOW_MAX, MOD_MAX, HIGH_MAX = 15.0, 50.0, 85.0
+
+LOW_MAX = 15.0
+MOD_MAX = 50.0
+HIGH_MAX = 85.0
+
 
 
 def categorize_risk(risk_percent: float) -> tuple[str, str]:
+    """
+    Convert numeric risk percentage to threshold-based label and emoji.
+    """
     if risk_percent >= HIGH_MAX:
-        return "VERY HIGH RISK", "🔴"
+        return "VERY HIGH", "🔴"
     if risk_percent >= MOD_MAX:
-        return "HIGH RISK", "🟠"
+        return "HIGH", "🟠"
     if risk_percent >= LOW_MAX:
-        return "MODERATE RISK", "🟡"
-    return "LOW RISK", "🟢"
+        return "MODERATE", "🟡"
+    return "LOW", "🟢"
+
 
 
 class RiskAnalyzer:
@@ -91,13 +101,21 @@ class RiskAnalyzer:
 
     @staticmethod
     def _preprocess_answers(answers: Dict[str, int]) -> Dict[str, int]:
+        """
+        Reverse-score recovery_actions if needed.
+        """
         processed = answers.copy()
+
         if processed.get("recovery_actions") is not None:
             processed["recovery_actions"] = 8 - int(processed["recovery_actions"])
+
         return processed
 
-    def _run_inference(self, answers: Dict[str, int]) -> Dict[str, Any]:
-        processed = self._preprocess_answers(answers)
+    @staticmethod
+    def _validate_answers(answers: Dict[str, int]) -> None:
+        missing = [feature for feature in QUESTIONNAIRE_FEATURES if feature not in answers]
+        if missing:
+            raise ValueError(f"Missing questionnaire fields: {missing}")
 
         X = pd.DataFrame(
             [[processed[f] for f in QUESTIONNAIRE_FEATURES]],
@@ -109,12 +127,16 @@ class RiskAnalyzer:
             columns=QUESTIONNAIRE_FEATURES,
         )
 
-        proba = self.model.predict_proba(scaled)[0]
-        risk_percent = float(proba[1] * 100.0)
+            try:
+                ivalue = int(value)
+            except Exception:
+                raise ValueError(f"Field '{feature}' must be an integer")
 
-        category, emoji = categorize_risk(risk_percent)
+            if ivalue < 1 or ivalue > 7:
+                raise ValueError(f"Field '{feature}' must be between 1 and 7")
 
         xai: List[Dict[str, Any]] = []
+
         try:
             if self.explainer is not None:
                 vals = self.explainer.shap_values(scaled)
@@ -143,18 +165,51 @@ class RiskAnalyzer:
         except Exception as e:
             logger.warning("SHAP failed during inference: %s", e)
 
+        return xai
+
+    def _run_inference(self, answers: Dict[str, int]) -> Dict[str, Any]:
+        self._validate_answers(answers)
+
+        processed = self._preprocess_answers(answers)
+
+        X = pd.DataFrame(
+            [[processed[f] for f in QUESTIONNAIRE_FEATURES]],
+            columns=QUESTIONNAIRE_FEATURES,
+        )
+
+        scaled = pd.DataFrame(
+            self.scaler.transform(X),
+            columns=QUESTIONNAIRE_FEATURES,
+        )
+
+        proba = self.model.predict_proba(scaled)[0]
+        risk_percent = float(proba[1] * 100.0)
+        risk_level, emoji = categorize_risk(risk_percent)
+        total_score = int(sum(int(processed[f]) for f in QUESTIONNAIRE_FEATURES))
+
+        xai = self._extract_shap(scaled, processed)
+
         return {
             "predicted_label": int(proba[1] >= 0.5),
+
+            # standardized keys for backend/storage
+            "risk_percent": round(risk_percent, 2),
+            "risk_level": risk_level,
+            "risk_emoji": emoji,
+            "risk_score": total_score,
+
+            # optional backward-compatible aliases
             "predicted_risk_percent": round(risk_percent, 2),
-            "category": category,
+            "category": risk_level,
             "emoji": emoji,
-            "total_score": int(sum(int(processed[f]) for f in QUESTIONNAIRE_FEATURES)),
+            "total_score": total_score,
+
             "model_version": MODEL_VERSION,
             "xai": xai,
         }
 
     async def predict(self, answers: Dict[str, int]) -> Dict[str, Any]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._run_inference, answers)
 
 

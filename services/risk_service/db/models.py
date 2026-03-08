@@ -1,5 +1,3 @@
-# services/risk_service/db/models.py
-
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -15,7 +13,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, declarative_base
 
 from .base import Base
 
@@ -23,34 +21,6 @@ from .base import Base
 # --------------------------
 # RISK schema
 # --------------------------
-class Patient(Base):
-    __tablename__ = "patients"
-    __table_args__ = (
-        CheckConstraint("age > 0 AND age < 130", name="ck_patient_age"),
-        CheckConstraint("days_since_last_use >= 0", name="ck_patient_days"),
-        {"schema": "risk"},
-    )
-
-    patient_id = Column(String(255), primary_key=True)
-    age = Column(Integer, nullable=False)
-    days_since_last_use = Column(Integer, nullable=False)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
-
-    assessments = relationship(
-        "Assessment",
-        back_populates="patient",
-        lazy="selectin",
-        cascade="all, delete-orphan",
-    )
-
-    weekly_checkins = relationship(
-        "WeeklyRelapseCheckin",
-        back_populates="patient",
-        lazy="selectin",
-        cascade="all, delete-orphan",
-    )
-
-
 class Assessment(Base):
     __tablename__ = "assessments"
     __table_args__ = (
@@ -68,9 +38,10 @@ class Assessment(Base):
     )
 
     assessment_id = Column(Integer, primary_key=True, autoincrement=True)
-    patient_id = Column(
+
+    user_id = Column(
         String(255),
-        ForeignKey("risk.patients.patient_id", ondelete="CASCADE"),
+        ForeignKey("core.users.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -89,7 +60,7 @@ class Assessment(Base):
     relapse_ideation = Column(Integer, nullable=False)
     recovery_actions = Column(Integer, nullable=False)
 
-    patient = relationship("Patient", back_populates="assessments")
+    user = relationship("User")
 
     prediction = relationship(
         "RiskPrediction",
@@ -104,10 +75,15 @@ class RiskPrediction(Base):
     __table_args__ = (
         CheckConstraint("predicted_label IN (0, 1)", name="ck_predicted_label"),
         CheckConstraint("predicted_risk_percent BETWEEN 0.00 AND 100.00", name="ck_risk_percent"),
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MODERATE', 'HIGH', 'VERY_HIGH')",
+            name="ck_risk_level",
+        ),
         {"schema": "risk"},
     )
 
     prediction_id = Column(Integer, primary_key=True, autoincrement=True)
+
     assessment_id = Column(
         Integer,
         ForeignKey("risk.assessments.assessment_id", ondelete="CASCADE"),
@@ -118,7 +94,8 @@ class RiskPrediction(Base):
 
     predicted_label = Column(SmallInteger, nullable=False)
     predicted_risk_percent = Column(Numeric(5, 2), nullable=False)
-    model_version = Column(String(50), nullable=False)
+    risk_level = Column(String(20), nullable=False)
+    model_version = Column(String(100), nullable=False)
     predicted_at = Column(DateTime, nullable=False, server_default=func.now())
 
     assessment = relationship("Assessment", back_populates="prediction")
@@ -142,12 +119,14 @@ class XaiExplanation(Base):
     )
 
     xai_id = Column(Integer, primary_key=True, autoincrement=True)
+
     prediction_id = Column(
         Integer,
         ForeignKey("risk.risk_predictions.prediction_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
+
     feature_name = Column(String(100), nullable=False)
     feature_value = Column(Integer, nullable=False)
     contribution = Column(Numeric(10, 6), nullable=False)
@@ -164,22 +143,26 @@ class WeeklyRelapseCheckin(Base):
     )
 
     checkin_id = Column(Integer, primary_key=True, autoincrement=True)
-    patient_id = Column(
+
+    user_id = Column(
         String(255),
-        ForeignKey("risk.patients.patient_id", ondelete="CASCADE"),
+        ForeignKey("core.users.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
     actual_relapse = Column(SmallInteger, nullable=False)
 
-    # DB column: timestamp with time zone
-    reported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    reported_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
 
-    # ✅ DB column: week_start (date)
     week_start = Column(Date, nullable=True, index=True)
 
-    patient = relationship("Patient", back_populates="weekly_checkins")
+    user = relationship("User")
 
 
 class Placeholder(Base):
@@ -226,6 +209,7 @@ class UserCredentials(Base):
         ForeignKey("core.users.user_id", ondelete="CASCADE"),
         primary_key=True,
     )
+
     password_hash = Column(Text, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, server_default=func.now(), nullable=True)
