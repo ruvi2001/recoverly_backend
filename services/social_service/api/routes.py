@@ -299,22 +299,21 @@ async def analyze_message(
 
         thresholds = analyzer.get_thresholds()
         profile = engine.update_user_risk_profile(request.user_id,thresholds)
-        
         logger.info(f"Updated risk profile: {profile['current_risk_label']}")
 
-        # AUTO-TRIGGER RISK CHECK (if message has high risk)
-        if predictions['risk_score'] > 0.7:  # Threshold
-            logger.info(f"High-risk message detected - triggering intervention check")
+        # Trigger agent
+        agent = get_agent(engine)
+        actions = agent.process_user(profile)
+        logger.info(f"Auto-triggered {len(actions)} interventions for {request.user_id}")
+
+        # # AUTO-TRIGGER RISK CHECK (if message has high risk)
+        # if predictions['risk_score'] > 0.7:  # Threshold
+        #     logger.info(f"High-risk message detected - triggering intervention check")
             
-            # Update risk profile
-            profile = engine.update_user_risk_profile(request.user_id, thresholds)
+        #     # Update risk profile
+        #     profile = engine.update_user_risk_profile(request.user_id, thresholds)
             
-            # Trigger agent
-            agent = get_agent(engine)
-            actions = agent.process_user(profile)
-            
-            logger.info(f"Auto-triggered {len(actions)} interventions")
-        
+             
         # Return results
         return MessageResponse(
             message_id=message_id,
@@ -560,11 +559,107 @@ async def send_message_rest(
     # profile + intervention logic (your existing)
     thresholds = analyzer.get_thresholds()
     profile = engine.update_user_risk_profile(user_id, thresholds)
-    if predictions["risk_score"] > 0.7:
-        agent = get_agent(engine)
-        agent.process_user(profile)
+    
+    agent = get_agent(engine)
+    actions = agent.process_user(profile)
+    logger.info(f"Auto-triggered {len(actions)} interventions for {user_id}")
 
     return {"message_id": message_id, "prediction_id": prediction_id}
+
+@app.get("/api/v1/interventions/next")
+async def get_next_intervention(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Returns the next pending intervention UI item for the user.
+    Priority:
+    1) HIGH: pending escalation
+    2) MED/LOW: latest unviewed nudge
+    3) NONE
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        # 1) Escalations first (HIGH)
+        cursor.execute("""
+            SELECT escalation_id, escalation_type, urgency, risk_score, risk_level,
+                   trigger_reason, timestamp
+            FROM social.escalations
+            WHERE user_id = %s
+              AND status = 'pending'
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (user_id,))
+        esc = cursor.fetchone()
+        if esc:
+            return {
+                "type": "HIGH",
+                "source": "escalation",
+                "payload": esc,
+            }
+
+        # 2) Unviewed nudges (LOW/MEDIUM)
+        cursor.execute("""
+            SELECT nudge_id, nudge_type, nudge_message, risk_level, sent_at
+            FROM social.nudges
+            WHERE user_id = %s
+              AND sent_at IS NOT NULL
+              AND viewed_at IS NULL
+            ORDER BY sent_at DESC
+            LIMIT 1
+        """, (user_id,))
+        nudge = cursor.fetchone()
+        if nudge:
+            # Decide UI type based on risk_level stored with nudge
+            lvl = (nudge.get("risk_level") or "").upper()
+            ui_type = "MEDIUM" if "MODERATE" in lvl else "LOW"
+            return {
+                "type": ui_type,
+                "source": "nudge",
+                "payload": nudge,
+            }
+
+    return {"type": "NONE", "source": None, "payload": None}
+
+@app.post("/api/v1/interventions/nudges/{nudge_id}/viewed")
+async def mark_nudge_viewed(
+    nudge_id: int,
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    engine = get_engine()
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            UPDATE social.nudges
+            SET viewed_at = COALESCE(viewed_at, CURRENT_TIMESTAMP)
+            WHERE nudge_id = %s AND user_id = %s
+        """, (nudge_id, user_id))
+    return {"ok": True}
+
+@app.post("/api/v1/interventions/nudges/{nudge_id}/respond")
+async def respond_to_nudge(
+    nudge_id: int,
+    response: str,  # "positive" | "negative" | "ignored"
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    engine = get_engine()
+    response = response.lower().strip()
+    if response not in ("positive", "negative", "ignored"):
+        raise HTTPException(status_code=400, detail="Invalid response")
+
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            UPDATE social.nudges
+            SET user_response = %s,
+                acted_on_at = CASE WHEN %s != 'ignored' THEN CURRENT_TIMESTAMP ELSE acted_on_at END,
+                viewed_at = COALESCE(viewed_at, CURRENT_TIMESTAMP)
+            WHERE nudge_id = %s AND user_id = %s
+        """, (response, response, nudge_id, user_id))
+
+    return {"ok": True}
+
 
 # STARTUP/SHUTDOWN
 
@@ -594,7 +689,6 @@ async def startup_event():
     
     logger.info("API is ready to receive requests")
     
-
 
 @app.on_event("shutdown")
 async def shutdown_event():

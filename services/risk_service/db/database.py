@@ -4,8 +4,10 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from models import (
-    Base,
+# IMPORTANT: use package-relative imports so "python -m ..." works
+from .base import Base
+from .models import (  # noqa: F401
+    Patient,
     Assessment,
     RiskPrediction,
     XaiExplanation,
@@ -18,7 +20,8 @@ from models import (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("risk_db_init")
 
-DATABASE_URL = "postgresql+asyncpg://postgres:piumi1234@localhost:5432/recoverly_platform"
+# ✅ Hard-coded async DB URL (no .env needed)
+DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/recoverly_platform"
 
 engine = create_async_engine(
     DATABASE_URL,

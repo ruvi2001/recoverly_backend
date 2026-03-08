@@ -1,11 +1,12 @@
+# services/risk_service/api/routes.py
+
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import select, desc, func, cast, Date, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,18 +14,10 @@ from db.temporal_engine import get_db
 from db.models import (
     Assessment,
     RiskPrediction,
-    WeeklyRelapseCheckin,
-    User,
-    UserCredentials,
+    WeeklyRelapseCheckin
 )
 
-from shared.auth.jwt_utils import (
-    hash_password,
-    verify_password,
-    create_access_token,
-    decode_token,
-)
-
+from shared.auth.dependencies import get_current_user_id
 from engine.risk_engine import run_assessment
 from engine.monitoring_engine import LOW_MAX, MOD_MAX, HIGH_MAX
 from api.schemas import (
@@ -62,147 +55,13 @@ app.add_middleware(
 async def startup_event():
     init_analyzer()
 
-
-auth_router = APIRouter(prefix="/auth", tags=["Auth"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
-
-
-class LoginIn(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class AuthResponse(BaseModel):
-    token: str
-    user_id: str
-    email: EmailStr
-    full_name: Optional[str] = None
-    role: str
-
-
-class MeOut(BaseModel):
-    user_id: str
-    email: EmailStr
-    full_name: Optional[str]
-    role: str
-
-
-def _role_of(u: User) -> str:
-    return (u.meta or {}).get("role", "patient")
-
-
-@auth_router.post("/register", response_model=AuthResponse, status_code=201)
-async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
-    email = body.email.lower().strip()
-
-    existing = (
-        await db.execute(select(User).where(User.email == email))
-    ).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
-
-    now = utcnow_naive()
-    new_user_id = f"user_{uuid.uuid4().hex[:12]}"
-
-    user = User(
-        user_id=new_user_id,
-        email=email,
-        full_name=body.full_name,
-        status="active",
-        meta={"role": "patient"},
-        created_at=now,
-        last_active=now,
-    )
-    db.add(user)
-    await db.flush()
-
-    cred = UserCredentials(
-        user_id=new_user_id,
-        password_hash=hash_password(body.password),
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(cred)
-
-    await db.commit()
-    await db.refresh(user)
-
-    token = create_access_token(user_id=user.user_id, expires_minutes=60 * 24)
-
-    return AuthResponse(
-        token=token,
-        user_id=user.user_id,
-        email=user.email,
-        full_name=user.full_name,
-        role=_role_of(user),
-    )
-
-
-@auth_router.post("/login", response_model=AuthResponse)
-async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
-    email = body.email.lower().strip()
-
-    u = (
-        await db.execute(select(User).where(User.email == email))
-    ).scalar_one_or_none()
-    if not u:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    cred = await db.get(UserCredentials, u.user_id)
-    if not cred or not verify_password(body.password, cred.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    now = utcnow_naive()
-    cred.last_login = now
-    cred.updated_at = now
-    await db.commit()
-
-    token = create_access_token(user_id=u.user_id, expires_minutes=60 * 24)
-
-    return AuthResponse(
-        token=token,
-        user_id=u.user_id,
-        email=u.email,
-        full_name=u.full_name,
-        role=_role_of(u),
-    )
-
-
-async def get_current_patient(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    payload = decode_token(token)
-    if not payload or "sub" not in payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    u = await db.get(User, payload["sub"])
-    if not u:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    return u
-
-
-@auth_router.get("/me", response_model=MeOut)
-async def me(current: User = Depends(get_current_patient)):
-    return MeOut(
-        user_id=current.user_id,
-        email=current.email,
-        full_name=current.full_name,
-        role=_role_of(current),
-    )
-
-
+# ============================================================
+# RISK ROUTES
+# ============================================================
 router = APIRouter(
     prefix="/risk",
     tags=["Risk"],
-    dependencies=[Depends(get_current_patient)],
+    dependencies=[Depends(get_current_user_id)],
 )
 
 
@@ -331,14 +190,17 @@ async def get_weekly_trends(user_id: str, db: AsyncSession = Depends(get_db)):
     return out
 
 
-@router.get("/should-show-popup/{user_id}")
-async def should_show_risk_popup(user_id: str, db: AsyncSession = Depends(get_db)):
-    if not await db.get(User, user_id):
-        raise HTTPException(status_code=404, detail="User not found")
+# ============================================================
+# POPUP RULE
+# ============================================================
+@router.get("/should-show-popup/{patient_id}")
+async def should_show_risk_popup(patient_id: str, db: AsyncSession = Depends(get_db)):
+    if not await db.get(Patient, patient_id):
+        raise HTTPException(status_code=404, detail="Patient not found")
 
     n_assess = (
         await db.execute(
-            select(func.count(Assessment.assessment_id)).where(Assessment.user_id == user_id)
+            select(func.count(Assessment.assessment_id)).where(Assessment.patient_id == patient_id)
         )
     ).scalar_one()
 
@@ -349,7 +211,7 @@ async def should_show_risk_popup(user_id: str, db: AsyncSession = Depends(get_db
         await db.execute(
             select(RiskPrediction.predicted_risk_percent)
             .join(Assessment, RiskPrediction.assessment_id == Assessment.assessment_id)
-            .where(Assessment.user_id == user_id)
+            .where(Assessment.patient_id == patient_id)
             .order_by(desc(Assessment.assessment_date), desc(Assessment.assessment_id))
             .limit(1)
         )
@@ -367,7 +229,7 @@ async def should_show_risk_popup(user_id: str, db: AsyncSession = Depends(get_db
     already = (
         await db.execute(
             select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
-                WeeklyRelapseCheckin.user_id == user_id,
+                WeeklyRelapseCheckin.patient_id == patient_id,
                 WeeklyRelapseCheckin.week_start == this_week,
             )
         )
@@ -395,7 +257,7 @@ async def should_show_weekly_relapse_popup(user_id: str, db: AsyncSession = Depe
     already = (
         await db.execute(
             select(func.count(WeeklyRelapseCheckin.checkin_id)).where(
-                WeeklyRelapseCheckin.user_id == user_id,
+                WeeklyRelapseCheckin.patient_id == patient_id,
                 WeeklyRelapseCheckin.week_start == this_week,
             )
         )
@@ -422,7 +284,7 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
         await db.execute(
             select(WeeklyRelapseCheckin)
             .where(
-                WeeklyRelapseCheckin.user_id == body.user_id,
+                WeeklyRelapseCheckin.patient_id == body.patient_id,
                 WeeklyRelapseCheckin.week_start == this_week,
             )
             .order_by(desc(WeeklyRelapseCheckin.checkin_id))
@@ -447,11 +309,11 @@ async def relapse_report(body: RelapseReportIn, db: AsyncSession = Depends(get_d
     await db.commit()
     return {
         "ok": True,
-        "user_id": body.user_id,
+        "patient_id": body.patient_id,
         "relapsed": bool(v),
         "week_start": str(this_week),
     }
 
 
-app.include_router(auth_router)
+
 app.include_router(router)
