@@ -5,7 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 # IMPORTANT: use package-relative imports so "python -m ..." works
-from . import Base
+from .base import Base
 from .models import (  # noqa: F401
     Patient,
     Assessment,
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("risk_db_init")
 
 # ✅ Hard-coded async DB URL (no .env needed)
-DATABASE_URL = "postgresql+asyncpg://postgres:piumi1234@localhost:5432/recoverly_platform"
+DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/recoverly_platform"
 
 engine = create_async_engine(
     DATABASE_URL,
