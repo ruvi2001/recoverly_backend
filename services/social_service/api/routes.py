@@ -613,14 +613,16 @@ async def get_next_intervention(
         if nudge:
             # Decide UI type based on risk_level stored with nudge
             lvl = (nudge.get("risk_level") or "").upper()
-            ui_type = "MEDIUM" if "MODERATE" in lvl else "LOW"
-            return {
-                "type": ui_type,
-                "source": "nudge",
-                "payload": nudge,
-            }
+            lvl = (nudge.get("risk_level") or "").upper()
 
-    return {"type": "NONE", "source": None, "payload": None}
+            if "HIGH" in lvl:
+                ui_type = "HIGH"
+            elif "MODERATE" in lvl:
+                ui_type = "MEDIUM"
+            else:
+                ui_type = "LOW"
+
+            return {"type": ui_type, "source": "nudge", "payload": nudge}
 
 @app.post("/api/v1/interventions/nudges/{nudge_id}/viewed")
 async def mark_nudge_viewed(
@@ -659,6 +661,23 @@ async def respond_to_nudge(
         """, (response, response, nudge_id, user_id))
 
     return {"ok": True}
+
+@app.post("/api/v1/interventions/escalations/{escalation_id}/acknowledge")
+async def acknowledge_escalation(
+    escalation_id: int,
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    engine = get_engine()
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            UPDATE social.escalations
+            SET status = 'acknowledged',
+                acknowledged_at = CURRENT_TIMESTAMP
+            WHERE escalation_id = %s AND user_id = %s
+        """, (escalation_id, user_id))
+    return {"ok": True}
+
 
 
 # STARTUP/SHUTDOWN

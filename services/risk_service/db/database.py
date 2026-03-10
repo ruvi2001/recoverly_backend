@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # IMPORTANT: use package-relative imports so "python -m ..." works
 from .base import Base
 from .models import (  # noqa: F401
-    Patient,
     Assessment,
     RiskPrediction,
     XaiExplanation,
