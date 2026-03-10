@@ -1,12 +1,11 @@
 import asyncio
 import pickle
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 import numpy as np
 import pandas as pd
 import shap
-from typing import Dict, List, Any
 
 from core.config import MODEL_PATH, SCALER_PATH
 
@@ -32,11 +31,7 @@ MOD_MAX = 50.0
 HIGH_MAX = 85.0
 
 
-
 def categorize_risk(risk_percent: float) -> tuple[str, str]:
-    """
-    Convert numeric risk percentage to threshold-based label and emoji.
-    """
     if risk_percent >= HIGH_MAX:
         return "VERY HIGH", "🔴"
     if risk_percent >= MOD_MAX:
@@ -44,7 +39,6 @@ def categorize_risk(risk_percent: float) -> tuple[str, str]:
     if risk_percent >= LOW_MAX:
         return "MODERATE", "🟡"
     return "LOW", "🟢"
-
 
 
 class RiskAnalyzer:
@@ -58,13 +52,13 @@ class RiskAnalyzer:
 
         logger.info("✓ ML model and scaler loaded")
 
+    # --------------------------------------------------
+    # Load model and scaler
+    # --------------------------------------------------
     def _load_model_and_scaler(self) -> None:
         with open(MODEL_PATH, "rb") as f:
             loaded = pickle.load(f)
 
-        # Supports either:
-        # 1. {"model": trained_model, ...}
-        # 2. direct model object
         if isinstance(loaded, dict) and "model" in loaded:
             self.model = loaded["model"]
         else:
@@ -73,16 +67,17 @@ class RiskAnalyzer:
         with open(SCALER_PATH, "rb") as f:
             self.scaler = pickle.load(f)
 
+    # --------------------------------------------------
+    # Prepare estimator for SHAP
+    # --------------------------------------------------
     def _get_estimator_for_shap(self):
         estimator = self.model
 
-        # If model is a sklearn Pipeline, try common final-step names
         if hasattr(estimator, "named_steps"):
             for step_name in ["classifier", "model", "rf", "random_forest", "estimator"]:
                 if step_name in estimator.named_steps:
                     return estimator.named_steps[step_name]
 
-            # fallback: last pipeline step
             try:
                 return list(estimator.named_steps.values())[-1]
             except Exception:
@@ -90,6 +85,9 @@ class RiskAnalyzer:
 
         return estimator
 
+    # --------------------------------------------------
+    # Build SHAP explainer
+    # --------------------------------------------------
     def _build_explainer(self) -> None:
         try:
             estimator = self._get_estimator_for_shap()
@@ -99,11 +97,11 @@ class RiskAnalyzer:
             self.explainer = None
             logger.warning("SHAP explainer could not be created: %s", e)
 
+    # --------------------------------------------------
+    # Preprocess answers
+    # --------------------------------------------------
     @staticmethod
     def _preprocess_answers(answers: Dict[str, int]) -> Dict[str, int]:
-        """
-        Reverse-score recovery_actions if needed.
-        """
         processed = answers.copy()
 
         if processed.get("recovery_actions") is not None:
@@ -111,30 +109,26 @@ class RiskAnalyzer:
 
         return processed
 
+    # --------------------------------------------------
+    # Validate answers
+    # --------------------------------------------------
     @staticmethod
     def _validate_answers(answers: Dict[str, int]) -> None:
-        missing = [feature for feature in QUESTIONNAIRE_FEATURES if feature not in answers]
+        missing = [f for f in QUESTIONNAIRE_FEATURES if f not in answers]
+
         if missing:
             raise ValueError(f"Missing questionnaire fields: {missing}")
 
-        X = pd.DataFrame(
-            [[processed[f] for f in QUESTIONNAIRE_FEATURES]],
-            columns=QUESTIONNAIRE_FEATURES,
-        )
-
-        scaled = pd.DataFrame(
-            self.scaler.transform(X),
-            columns=QUESTIONNAIRE_FEATURES,
-        )
-
-            try:
-                ivalue = int(value)
-            except Exception:
-                raise ValueError(f"Field '{feature}' must be an integer")
+        for feature, value in answers.items():
+            ivalue = int(value)
 
             if ivalue < 1 or ivalue > 7:
                 raise ValueError(f"Field '{feature}' must be between 1 and 7")
 
+    # --------------------------------------------------
+    # SHAP extraction
+    # --------------------------------------------------
+    def _extract_shap(self, scaled: pd.DataFrame, processed: Dict[str, int]) -> List[Dict[str, Any]]:
         xai: List[Dict[str, Any]] = []
 
         try:
@@ -154,19 +148,26 @@ class RiskAnalyzer:
                         "contribution": np.array(vals).astype(float),
                     }
                 )
+
                 df["rank"] = (
                     df["contribution"]
                     .abs()
                     .rank(ascending=False, method="min")
                     .astype(int)
                 )
+
                 df = df.sort_values("rank")
+
                 xai = df.to_dict(orient="records")
+
         except Exception as e:
             logger.warning("SHAP failed during inference: %s", e)
 
         return xai
 
+    # --------------------------------------------------
+    # Model inference
+    # --------------------------------------------------
     def _run_inference(self, answers: Dict[str, int]) -> Dict[str, Any]:
         self._validate_answers(answers)
 
@@ -183,31 +184,29 @@ class RiskAnalyzer:
         )
 
         proba = self.model.predict_proba(scaled)[0]
-        risk_percent = float(proba[1] * 100.0)
+
+        risk_percent = float(proba[1] * 100)
+
         risk_level, emoji = categorize_risk(risk_percent)
-        total_score = int(sum(int(processed[f]) for f in QUESTIONNAIRE_FEATURES))
+
+        total_score = int(sum(processed[f] for f in QUESTIONNAIRE_FEATURES))
 
         xai = self._extract_shap(scaled, processed)
 
         return {
             "predicted_label": int(proba[1] >= 0.5),
-
-            # standardized keys for backend/storage
-            "risk_percent": round(risk_percent, 2),
-            "risk_level": risk_level,
-            "risk_emoji": emoji,
-            "risk_score": total_score,
-
-            # optional backward-compatible aliases
             "predicted_risk_percent": round(risk_percent, 2),
+            "risk_level": risk_level,
             "category": risk_level,
             "emoji": emoji,
             "total_score": total_score,
-
             "model_version": MODEL_VERSION,
             "xai": xai,
         }
 
+    # --------------------------------------------------
+    # Async wrapper
+    # --------------------------------------------------
     async def predict(self, answers: Dict[str, int]) -> Dict[str, Any]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._run_inference, answers)
