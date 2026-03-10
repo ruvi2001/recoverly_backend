@@ -35,6 +35,11 @@ class Settings:
     # API Configuration
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
     API_PORT: int = int(os.getenv("API_PORT", "8000"))
+
+    # JWT Auth
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "dev_change_me")
+    JWT_ALG: str = os.getenv("JWT_ALG", "HS256")
+    JWT_EXPIRES_MIN: int = int(os.getenv("JWT_EXPIRES_MIN", "43200"))
     
     @property
     def database_url(self) -> str:

@@ -9,7 +9,7 @@ This project uses a **microservices architecture** with 4 independent components
 ```
 ├── Component 1: Risk Detection & XAI (risk_service)
 ├── Component 2: Intervention & Recommendations (reco_service)
-├── Component 3: Social Support & Peer Network (social_service) ✅ Implemented
+├── Component 3: Social Support & Peer Network (social_service)
 └── Component 4: Causal Factor Analysis (causal_service)
 ```
 
@@ -20,7 +20,7 @@ research_project/
 ├── services/
 │   ├── risk_service/         # Component 1
 │   ├── reco_service/         # Component 2
-│   ├── social_service/       # Component 3 ✅
+│   ├── social_service/       # Component 3 
 │   └── causal_service/       # Component 4
 ├── shared/                   # Common code
 ├── database/                 # Database schemas
@@ -255,13 +255,6 @@ See `database/SETUP_GUIDE.md` for detailed troubleshooting.
 3. Test thoroughly
 4. Create a Pull Request
 5. Wait for review
-
-## 📧 Contact
-
-- Component 1: [Member 1 Email]
-- Component 2: [Member 2 Email]
-- Component 3: [Your Email]
-- Component 4: [Member 4 Email]
 
 ## 📄 License
 

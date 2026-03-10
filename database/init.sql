@@ -1,3 +1,4 @@
+
 -- ============================================================================
 -- PostgreSQL Database Initialization Script
 -- Project: Recoverly Platform
@@ -284,3 +285,86 @@ FROM information_schema.tables
 WHERE table_schema IN ('core', 'social', 'risk', 'reco', 'causal')
 GROUP BY table_schema
 ORDER BY table_schema;
+
+SELECT schema_name FROM information_schema.schemata
+WHERE schema_name IN ('core', 'social');
+
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'social'
+ORDER BY table_name;
+
+SELECT * FROM core.messages WHERE user_id = 'test_user_001';
+SELECT * FROM social.message_predictions WHERE user_id = 'test_user_001';
+SELECT * FROM social.user_risk_profiles WHERE user_id = 'test_user_002';
+
+SELECT * FROM core.messages ORDER BY timestamp DESC LIMIT 5;
+SELECT * FROM social.message_predictions ORDER BY timestamp DESC LIMIT 5;
+SELECT user_id, current_risk_label, reasons 
+FROM social.user_risk_profiles;
+
+-- 1. Check mes
+SELECT * FROM core.messages WHERE user_id = 'alice_001';
+
+
+-- 2. Check predictions
+SELECT * FROM social.message_predictions WHERE user_id = 'alice_001';
+
+-- 3. Check risk profile
+SELECT user_id, current_risk_label, reasons 
+FROM social.user_risk_profiles 
+WHERE user_id = 'alice_001';
+
+-- 4. Check interventions logged
+SELECT * FROM social.actions WHERE user_id = 'alice_001';
+
+-- 5. Check nudges sent
+SELECT * FROM social.nudges WHERE user_id = 'alice_001';
+
+-- 6. Check escalations
+SELECT * FROM social.escalations WHERE user_id = 'alice_001';
+
+SELECT to_regclass('core.conversations') AS conversations,
+       to_regclass('core.conversation_participants') AS participants;
+
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema='core' AND table_name='messages'
+ORDER BY ordinal_position;
+
+SELECT * FROM core.messages WHERE conversation_id = 1;
+SELECT * FROM social.message_predictions WHERE message_id = 5;
+
+-- core.user_credentials: stores local password auth only
+CREATE TABLE IF NOT EXISTS core.user_credentials (
+  user_id VARCHAR(255) PRIMARY KEY REFERENCES core.users(user_id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_login TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_credentials_last_login
+ON core.user_credentials(last_login DESC);
+
+SELECT user_id, email, username, full_name, status, created_at
+FROM core.users
+ORDER BY created_at DESC
+LIMIT 20;
+
+SELECT u.user_id, u.email, u.created_at,
+       (c.user_id IS NOT NULL) AS has_credentials,
+	   c.last_login
+FROM core.users u
+LEFT JOIN core.user_credentials c ON c.user_id = u.user_id
+ORDER BY u.created_at DESC
+LIMIT 50;
+
+SELECT user_id, email, full_name, status, created_at
+FROM core.users
+WHERE email = 'test_001@example.com';
+
+SELECT c.user_id, c.created_at, c.last_login
+FROM core.user_credentials c
+WHERE c.user_id = (
+  SELECT user_id FROM core.users WHERE email='test_001@example.com'
+  );

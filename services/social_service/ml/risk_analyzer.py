@@ -12,7 +12,7 @@ from pathlib import Path
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from config import RISK_MODEL_PATH, ISOLATION_MODEL_PATH, FUSION_CONFIG_PATH, RISK_SETTINGS
+from core.config import RISK_MODEL_PATH, ISOLATION_MODEL_PATH, FUSION_CONFIG_PATH, RISK_SETTINGS
 
 
 class RiskAnalyzer:
