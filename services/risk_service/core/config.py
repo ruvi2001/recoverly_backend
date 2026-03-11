@@ -18,7 +18,7 @@ DB_HOST = os.getenv("DB_HOST", "localhost").strip()
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "recoverly_platform").strip()
 DB_USER = os.getenv("DB_USER", "postgres").strip()
-DB_PASSWORD = os.getenv("DB_PASSWORD", "piumi1234")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "user")
 
 # Debug (safe)
 print(f"✓ [risk_service] DB_HOST={DB_HOST} DB_PORT={DB_PORT} DB_NAME={DB_NAME} DB_USER={DB_USER}")
