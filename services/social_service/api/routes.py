@@ -33,6 +33,7 @@ from shared.auth.user_repo import (
 from core.config import API_CONFIG, MOBILE_APP_CONFIG, LOGGING_CONFIG, SERVICE_NAME
 from db.temporal_engine import TemporalRiskEngine, get_engine
 from ml.risk_analyzer import get_analyzer
+from typing import Optional
 
 
 # LOGGING SETUP
@@ -116,6 +117,29 @@ class OneToOneConversationRequest(BaseModel):
 
 class SendChatMessageRequest(BaseModel):
     text: str = Field(..., min_length=1)
+
+class TrustedContactIn(BaseModel):
+    contact_name: str
+    relationship: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    notify_on_high_risk: bool = True
+    consent_given: bool = False
+
+
+class CounselorContactIn(BaseModel):
+    counselor_name: str
+    clinic_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    urgent_contact_allowed: bool = False
+    meeting_consent_given: bool = False
+
+
+class SupportSetupIn(BaseModel):
+    trusted_contact: TrustedContactIn
+    counselor_contact: CounselorContactIn
+
 
 
 # class InterventionRecommendation(BaseModel):
@@ -251,6 +275,389 @@ async def me(user_id: str = Depends(get_current_user_id)):
     finally:
         conn.close()
 
+@app.post("/api/v1/support/setup")
+async def save_support_setup(
+    body: SupportSetupIn,
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Save or replace emergency support setup for the logged-in user.
+    Stores:
+    - primary trusted contact
+    - primary counselor contact
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        # Remove old active trusted contacts for this user
+        cursor.execute("""
+            DELETE FROM social.trusted_contacts
+            WHERE user_id = %s
+        """, (user_id,))
+
+        # Remove old active counselor contact for this user
+        cursor.execute("""
+            DELETE FROM social.user_counselor_contacts
+            WHERE user_id = %s
+        """, (user_id,))
+
+        # Insert trusted contact
+        cursor.execute("""
+            INSERT INTO social.trusted_contacts (
+                user_id,
+                contact_name,
+                relationship,
+                phone,
+                email,
+                notify_on_high_risk,
+                is_primary,
+                consent_given,
+                consent_given_at,
+                status,
+                created_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s,
+                TRUE,
+                %s,
+                CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END,
+                'active',
+                CURRENT_TIMESTAMP
+            )
+        """, (
+            user_id,
+            body.trusted_contact.contact_name,
+            body.trusted_contact.relationship,
+            body.trusted_contact.phone,
+            body.trusted_contact.email,
+            body.trusted_contact.notify_on_high_risk,
+            body.trusted_contact.consent_given,
+            body.trusted_contact.consent_given,
+        ))
+
+        # Insert counselor contact
+        cursor.execute("""
+            INSERT INTO social.user_counselor_contacts (
+                user_id,
+                counselor_name,
+                clinic_name,
+                phone,
+                email,
+                urgent_contact_allowed,
+                meeting_consent_given,
+                consent_given_at,
+                status,
+                created_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                CASE
+                    WHEN %s OR %s THEN CURRENT_TIMESTAMP
+                    ELSE NULL
+                END,
+                'active',
+                CURRENT_TIMESTAMP
+            )
+        """, (
+            user_id,
+            body.counselor_contact.counselor_name,
+            body.counselor_contact.clinic_name,
+            body.counselor_contact.phone,
+            body.counselor_contact.email,
+            body.counselor_contact.urgent_contact_allowed,
+            body.counselor_contact.meeting_consent_given,
+            body.counselor_contact.urgent_contact_allowed,
+            body.counselor_contact.meeting_consent_given,
+        ))
+
+    return {
+        "ok": True,
+        "message": "Emergency support setup saved successfully"
+    }
+
+@app.get("/api/v1/support/setup")
+async def get_support_setup(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Return current trusted contact + counselor contact for logged-in user.
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                contact_id,
+                contact_name,
+                relationship,
+                phone,
+                email,
+                notify_on_high_risk,
+                is_primary,
+                consent_given,
+                consent_given_at,
+                status,
+                created_at
+            FROM social.trusted_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY is_primary DESC, created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        trusted_contact = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT
+                counselor_contact_id,
+                counselor_name,
+                clinic_name,
+                phone,
+                email,
+                urgent_contact_allowed,
+                meeting_consent_given,
+                consent_given_at,
+                status,
+                created_at
+            FROM social.user_counselor_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        counselor_contact = cursor.fetchone()
+
+    return {
+        "trusted_contact": trusted_contact,
+        "counselor_contact": counselor_contact,
+    }
+
+@app.get("/api/v1/trusted-contact/primary")
+async def get_primary_trusted_contact(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Return the primary trusted contact for the logged-in user.
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                contact_id,
+                contact_name,
+                relationship,
+                phone,
+                email,
+                notify_on_high_risk,
+                is_primary,
+                consent_given,
+                consent_given_at,
+                status,
+                created_at
+            FROM social.trusted_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY is_primary DESC, created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cursor.fetchone()
+
+    return row
+
+@app.get("/api/v1/counselor-contact/primary")
+async def get_primary_counselor_contact(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Return the primary counselor contact for the logged-in user.
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                counselor_contact_id,
+                counselor_name,
+                clinic_name,
+                phone,
+                email,
+                urgent_contact_allowed,
+                meeting_consent_given,
+                consent_given_at,
+                status,
+                created_at
+            FROM social.user_counselor_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cursor.fetchone()
+
+    return row
+
+@app.post("/api/v1/trusted-contact/notify")
+async def notify_trusted_contact(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Prototype trusted-contact escalation.
+    For demo:
+    - fetch primary trusted contact
+    - check consent
+    - log a support action
+    - return notification-ready status
+
+    In production:
+    - integrate SMS / WhatsApp / voice / email service here
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        # Get primary trusted contact
+        cursor.execute("""
+            SELECT
+                contact_id,
+                contact_name,
+                relationship,
+                phone,
+                email,
+                notify_on_high_risk,
+                consent_given
+            FROM social.trusted_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY is_primary DESC, created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        contact = cursor.fetchone()
+
+        if not contact:
+            raise HTTPException(
+                status_code=404,
+                detail="No trusted contact found for this user"
+            )
+
+        if not contact.get("consent_given"):
+            raise HTTPException(
+                status_code=400,
+                detail="Trusted contact consent not available"
+            )
+
+        if not contact.get("notify_on_high_risk"):
+            raise HTTPException(
+                status_code=400,
+                detail="Trusted contact notifications are disabled"
+            )
+
+        # Log action in social.actions
+        cursor.execute("""
+            INSERT INTO social.actions (
+                user_id,
+                timestamp,
+                action_type,
+                risk_level,
+                action_data,
+                status,
+                ai_reasoning,
+                confidence_score
+            )
+            VALUES (
+                %s,
+                CURRENT_TIMESTAMP,
+                %s,
+                %s,
+                %s::jsonb,
+                %s,
+                %s,
+                %s
+            )
+            RETURNING action_id
+        """, (
+            user_id,
+            "trusted_contact_notification",
+            "HIGH_RISK",
+            f"""{{
+                "contact_id": {contact["contact_id"]},
+                "contact_name": "{contact["contact_name"]}",
+                "relationship": "{contact.get("relationship") or ""}",
+                "phone": "{contact.get("phone") or ""}",
+                "email": "{contact.get("email") or ""}",
+                "mode": "demo_simulation"
+            }}""",
+            "completed",
+            "Trusted contact escalation prepared for high-risk support flow",
+            0.95,
+        ))
+        action = cursor.fetchone()
+
+    return {
+        "ok": True,
+        "message": "Trusted contact notification prepared",
+        "mode": "demo_simulation",
+        "action_id": action["action_id"] if action else None,
+        "contact": contact,
+        "notification_status": "prepared"
+    }
+
+@app.get("/api/v1/trusted-contact/support/current")
+async def get_current_trusted_contact_support(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Return latest trusted-contact related support action for the logged-in user.
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                action_id,
+                action_type,
+                risk_level,
+                action_data,
+                status,
+                timestamp,
+                ai_reasoning,
+                confidence_score
+            FROM social.actions
+            WHERE user_id = %s
+              AND action_type = 'trusted_contact_notification'
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (user_id,))
+        action = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT
+                contact_id,
+                contact_name,
+                relationship,
+                phone,
+                email,
+                notify_on_high_risk,
+                consent_given
+            FROM social.trusted_contacts
+            WHERE user_id = %s
+              AND status = 'active'
+            ORDER BY is_primary DESC, created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        contact = cursor.fetchone()
+
+    return {
+        "user_id": user_id,
+        "has_active_support": bool(action or contact),
+        "trusted_contact": contact,
+        "latest_action": action,
+        "message": "Trusted contact support is available" if contact else "No trusted contact configured"
+    }
 
 @app.post("/api/v1/analyze-message", response_model=MessageResponse)
 async def analyze_message(
@@ -613,7 +1020,7 @@ async def get_next_intervention(
         if nudge:
             # Decide UI type based on risk_level stored with nudge
             lvl = (nudge.get("risk_level") or "").upper()
-            lvl = (nudge.get("risk_level") or "").upper()
+           
 
             if "HIGH" in lvl:
                 ui_type = "HIGH"
@@ -623,6 +1030,8 @@ async def get_next_intervention(
                 ui_type = "LOW"
 
             return {"type": ui_type, "source": "nudge", "payload": nudge}
+        
+    return {"type": "NONE", "source": None, "payload": None}
 
 @app.post("/api/v1/interventions/nudges/{nudge_id}/viewed")
 async def mark_nudge_viewed(
