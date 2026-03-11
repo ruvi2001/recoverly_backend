@@ -252,6 +252,35 @@ async def me(user_id: str = Depends(get_current_user_id)):
         conn.close()
 
 
+@app.get("/auth/users")
+async def get_all_users(user_id: str = Depends(get_current_user_id)):
+    """
+    Get list of all registered users
+    Requires authentication
+    """
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    from shared.core.settings import settings
+
+    conn = psycopg2.connect(
+        host=settings.DB_HOST,
+        port=settings.DB_PORT,
+        dbname=settings.DB_NAME,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        options="-c search_path=core",
+    )
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT user_id, email, full_name FROM core.users WHERE status = 'active' ORDER BY email"
+            )
+            rows = cur.fetchall()
+            return {"users": rows}
+    finally:
+        conn.close()
+
+
 @app.post("/api/v1/analyze-message", response_model=MessageResponse)
 async def analyze_message(
     request: MessageRequest,
