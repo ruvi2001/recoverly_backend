@@ -678,6 +678,84 @@ async def acknowledge_escalation(
         """, (escalation_id, user_id))
     return {"ok": True}
 
+@app.get("/api/v1/interventions/counselor-support/current")
+async def get_current_counselor_support(
+    user_id: str = Depends(get_user_id_from_token),
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Return latest counselor-support related escalation + meeting + action
+    for the currently logged-in user.
+    """
+    engine = get_engine()
+
+    with engine.get_cursor() as cursor:
+        # latest escalation
+        cursor.execute("""
+            SELECT
+                escalation_id,
+                escalation_type,
+                urgency,
+                risk_score,
+                risk_level,
+                trigger_reason,
+                escalated_to,
+                notification_method,
+                status,
+                timestamp,
+                acknowledged_at,
+                resolved_at
+            FROM social.escalations
+            WHERE user_id = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (user_id,))
+        escalation = cursor.fetchone()
+
+        # latest urgent/emergency meeting
+        cursor.execute("""
+            SELECT
+                meeting_id,
+                meeting_type,
+                scheduled_time,
+                duration_minutes,
+                counselor_id,
+                status,
+                created_at,
+                notes
+            FROM social.meetings
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        meeting = cursor.fetchone()
+
+        # latest counselor-related action
+        cursor.execute("""
+            SELECT
+                action_id,
+                action_type,
+                risk_level,
+                action_data,
+                status,
+                timestamp
+            FROM social.actions
+            WHERE user_id = %s
+              AND action_type IN ('counselor_alert', 'urgent_meeting_scheduled')
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (user_id,))
+        action = cursor.fetchone()
+
+    return {
+        "user_id": user_id,
+        "has_active_support": bool(escalation or meeting or action),
+        "escalation": escalation,
+        "meeting": meeting,
+        "action": action,
+        "message": "Urgent counselor support requested" if (escalation or meeting or action) else "No active counselor support request"
+    }
+
 
 
 # STARTUP/SHUTDOWN
