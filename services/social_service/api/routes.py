@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from typing import Optional, List
 from datetime import datetime
-from agent.intervention_agent import get_agent
+from services.social_service.agent.intervention_agent import get_agent
 import logging
 
 import sys
