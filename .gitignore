@@ -92,3 +92,6 @@ docker-compose.override.yml
 desktop.ini
 .DS_Store
 Thumbs.db
+
+#enviroment files
+.env.example
