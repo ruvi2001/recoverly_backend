@@ -1,9 +1,9 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, status
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ml.predictor import predict_arrs
 from db.temporal_engine import get_db
 from db.models import User, RecommendationAssessment, Recommendation
 from shared.auth.dependencies import get_current_user_id
@@ -14,40 +14,45 @@ from api.schemas import (
     FeedbackRequest,
     FeedbackResponse,
     RecommendationHistoryItem,
-)
-from ml.encoder import init_encoder
-from ml.policy import init_policy
-from ml.bandit import init_bandit_runtime
-
-
-app = FastAPI(title="Recoverly Recommendation Service")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    ARRSAnalyzeRequest,
+    ARRSAnalyzeResponse,
 )
 
+from db.models import ARRSSession
+from api.schemas import ARRSSaveSessionRequest, ARRSSaveSessionResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from db.temporal_engine import get_db
 
-@app.on_event("startup")
-async def startup_event():
-    init_encoder()
-    init_policy()
-    init_bandit_runtime()
-
-
-@app.get("/")
-async def root():
-    return {"service": "reco_service", "status": "running"}
-
+public_router = APIRouter(
+    prefix="/reco",
+    tags=["Recommendation"],
+)
 
 router = APIRouter(
     prefix="/reco",
     tags=["Recommendation"],
     dependencies=[Depends(get_current_user_id)],
 )
+
+
+@public_router.post("/arrs/analyze", response_model=ARRSAnalyzeResponse)
+def analyze_arrs(payload: ARRSAnalyzeRequest):
+    try:
+        print("ARRS payload received:", payload.model_dump())
+
+        result = predict_arrs(
+            answers=payload.answers,
+            risk_level=payload.risk_level or "Moderate",
+        )
+
+        print("ARRS prediction result:", result)
+        return result
+    except Exception as e:
+        print("ARRS prediction failed:", repr(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"ARRS prediction failed: {str(e)}",
+        ) from e
 
 
 @router.post("/recommend", response_model=RecommendResponse, status_code=status.HTTP_201_CREATED)
@@ -163,6 +168,37 @@ async def latest_recommendation(
         explanation=(recommendation.decision_meta or {}).get("explanation"),
     )
 
+@public_router.post("/arrs/save-session", response_model=ARRSSaveSessionResponse)
+async def save_arrs_session(
+    payload: ARRSSaveSessionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        session = ARRSSession(
+            user_id="test_user_003",  # replace later with actual logged-in user
+            submitted_at=payload.submitted_at,
+            risk_level=payload.risk_level,
+            predicted_category=payload.predicted_category,
+            confidence=payload.confidence,
+            answers_json=payload.answers,
+            recommendation_json=payload.recommendation,
+            feedback_rating=payload.feedback_rating,
+            feedback_text=payload.feedback_text,
+        )
+
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+
+        return ARRSSaveSessionResponse(
+            ok=True,
+            session_id=session.session_id,
+            message="ARRS session saved successfully."
+        )
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save ARRS session: {e}")
+
 
 @router.get("/history", response_model=list[RecommendationHistoryItem])
 async def recommendation_history(
@@ -202,6 +238,3 @@ async def recommendation_history(
         )
 
     return out
-
-
-app.include_router(router)

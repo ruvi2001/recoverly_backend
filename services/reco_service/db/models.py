@@ -11,9 +11,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    Float,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
 from .base import Base
 
@@ -247,3 +249,23 @@ class UserCredentials(Base):
     last_login = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="credentials")
+
+
+class ARRSSession(Base):
+    __tablename__ = "arrs_sessions"
+    __table_args__ = {"schema": "reco"}
+
+    session_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    submitted_at = Column(String, nullable=True)
+    risk_level = Column(String, nullable=True)
+    predicted_category = Column(String, nullable=False)
+    confidence = Column(Float, nullable=True)
+
+    answers_json = Column(JSONB, nullable=False)
+    recommendation_json = Column(JSONB, nullable=True)
+
+    feedback_rating = Column(Integer, nullable=False)
+    feedback_text = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

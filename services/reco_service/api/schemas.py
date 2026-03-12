@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List 
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -168,3 +168,31 @@ class ActionFamiliesResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     extra: dict[str, Any] | None = None
+
+class ARRSAnalyzeRequest(BaseModel):
+    submitted_at: Optional[str] = None
+    risk_level: Optional[str] = "Moderate"
+    answers: dict[str, list[str]]
+
+class ARRSAnalyzeResponse(BaseModel):
+    predicted_family: str
+    selected_action: str | dict | list
+    recommendation: str | dict | list
+    confidence: float | None = None
+
+
+class ARRSSaveSessionRequest(BaseModel):
+    submitted_at: Optional[str] = None
+    risk_level: Optional[str] = "Moderate"
+    predicted_category: str
+    confidence: Optional[float] = None
+    answers: dict[str, list[str]]
+    recommendation: Any = None
+    feedback_rating: int
+    feedback_text: Optional[str] = ""
+
+
+class ARRSSaveSessionResponse(BaseModel):
+    ok: bool
+    session_id: int
+    message: str
