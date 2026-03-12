@@ -667,6 +667,7 @@ class TemporalRiskEngine:
         u1, u2 = sorted([user_id, other_user_id])
 
         with self.get_cursor() as cursor:
+            # Find existing 1-1 conversation between these exact 2 users
             cursor.execute("""
                SELECT c.conversation_id
                FROM core.conversations c
@@ -675,7 +676,10 @@ class TemporalRiskEngine:
                WHERE c.conversation_type = %s
                   AND p1.user_id = %s
                   AND p2.user_id = %s
-               GROUP BY c.conversation_id
+                  AND p1.user_id < p2.user_id  -- Ensure p1 and p2 are different rows
+                  -- Ensure conversation has EXACTLY 2 participants (no more, no less)
+                  AND (SELECT COUNT(*) FROM core.conversation_participants 
+                       WHERE conversation_id = c.conversation_id) = 2
                LIMIT 1
             """, (conversation_type, u1, u2))
 
