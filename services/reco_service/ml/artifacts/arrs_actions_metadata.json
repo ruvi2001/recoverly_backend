@@ -1,0 +1,18 @@
+{
+  "actions": [
+    "Coping_Prompt",
+    "Coping_Skill_Training",
+    "Grounding_and_Coping",
+    "Motivational_Message",
+    "Routine_and_Progress",
+    "Support_Routing_or_Safe_Space"
+  ],
+  "action_descriptions": {
+    "Support_Routing_or_Safe_Space": "High-support recommendation family focused on safe space, human support, and rapid coping stabilization.",
+    "Grounding_and_Coping": "Recommendation family focused on immediate grounding and coping techniques.",
+    "Coping_Skill_Training": "Recommendation family focused on building coping skills and relapse-prevention techniques.",
+    "Coping_Prompt": "Short recommendation family for immediate coping prompt or micro-intervention.",
+    "Routine_and_Progress": "Recommendation family focused on recovery routines, structure, and progress reinforcement.",
+    "Motivational_Message": "Recommendation family focused on motivation, encouragement, and continued abstinence support."
+  }
+}

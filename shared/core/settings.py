@@ -21,7 +21,7 @@ class Settings:
     DB_PORT: int = int(os.getenv("DB_PORT", "5432"))
     DB_NAME: str = os.getenv("DB_NAME", "recoverly_platform")
     DB_USER: str = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "user")
     DB_MIN_CONN: int = int(os.getenv("DB_MIN_CONN", "2"))
     DB_MAX_CONN: int = int(os.getenv("DB_MAX_CONN", "10"))
     

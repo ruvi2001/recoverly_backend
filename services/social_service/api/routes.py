@@ -1,6 +1,6 @@
 """
-FastAPI Server for Recoverly Risk Monitoring System
-Handles incoming messages from the mobile app and returns risk assessments
+FastAPI Server for Recoverly Risk Service
+Auth-only routes for mobile app integration
 """
 
 from fastapi import FastAPI, HTTPException, Header, Depends
@@ -10,17 +10,19 @@ from typing import Optional, List
 from datetime import datetime
 from services.social_service.agent.intervention_agent import get_agent
 import logging
-
 import sys
+import uuid
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
+from typing import Optional
 
-BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../recoverly_backend
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field
+
+BACKEND_ROOT = Path(__file__).resolve().parents[3]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import uuid
-from pydantic import EmailStr
 from shared.auth.jwt_utils import hash_password, verify_password, create_access_token
 from shared.auth.dependencies import get_current_user_id
 from shared.auth.user_repo import (
@@ -29,6 +31,7 @@ from shared.auth.user_repo import (
     create_user_and_credentials,
     touch_last_login,
 )
+from core.config import SERVICE_NAME
 
 from core.config import API_CONFIG, MOBILE_APP_CONFIG, LOGGING_CONFIG, SERVICE_NAME
 from db.temporal_engine import TemporalRiskEngine, get_engine
@@ -46,21 +49,18 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-
-# FASTAPI APP
+logging.basicConfig(level=logging.INFO)
 
 
 app = FastAPI(
     title=f"{SERVICE_NAME} API",
-    description="Agentic Support and Peer Network Facilitator - Real-time psychological risk detection",
-    version="1.0.0"
+    description="Recoverly authentication service",
+    version="1.0.0",
 )
 
-# CORS middleware (allow mobile app to call API)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production: specify actual mobile app URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -155,8 +155,9 @@ class SupportSetupIn(BaseModel):
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password:str = Field(min_length=1)
+    password: str = Field(min_length=1)
     full_name: Optional[str] = None
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -170,32 +171,14 @@ class AuthResponse(BaseModel):
     full_name: Optional[str] = None
 
 
-async def verify_api_key(x_api_key: str = Header(...)):
-    """
-    Verify API key from mobile app
-    In production: use proper authentication (JWT, OAuth2)
-    """
-    if x_api_key != MOBILE_APP_CONFIG['api_key']:
-        logger.warning(f"Invalid API key attempt: {x_api_key}")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
-
-def get_user_id_from_token(user_id: str = Depends(get_current_user_id)):
-    return user_id
-
-# ENDPOINTS
-
-
 @app.get("/")
 async def root():
-    """Health check endpoint"""
     return {
         "service": SERVICE_NAME,
-        "component": "Agentic Social Support and Peer Network Facilitator",
         "status": "operational",
         "version": "1.0.0",
-        "timestamp": datetime.now().isoformat()
     }
+
 
 @app.post("/auth/register", response_model=AuthResponse)
 async def register(req: RegisterRequest):
@@ -205,21 +188,24 @@ async def register(req: RegisterRequest):
 
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     username = req.email.split("@")[0]
+    password_hash = hash_password(req.password)
 
-    from fastapi import HTTPException
-
-    pw_hash = hash_password(req.password)
- 
     create_user_and_credentials(
         user_id=user_id,
         email=req.email,
         username=username,
         full_name=req.full_name,
-        password_hash=pw_hash,
+        password_hash=password_hash,
     )
 
     token = create_access_token(user_id)
-    return AuthResponse(token=token, user_id=user_id, email=req.email, full_name=req.full_name)
+
+    return AuthResponse(
+        token=token,
+        user_id=user_id,
+        email=req.email,
+        full_name=req.full_name,
+    )
 
 
 @app.post("/auth/login", response_model=AuthResponse)
@@ -236,8 +222,8 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     touch_last_login(user["user_id"])
-
     token = create_access_token(user["user_id"])
+
     return AuthResponse(
         token=token,
         user_id=user["user_id"],
@@ -248,8 +234,6 @@ async def login(req: LoginRequest):
 
 @app.get("/auth/me")
 async def me(user_id: str = Depends(get_current_user_id)):
-    # You can return full profile later; keep it simple now
-    # reuse repo to fetch by email isn't possible here, so query by id quickly:
     import psycopg2
     from psycopg2.extras import RealDictCursor
     from shared.core.settings import settings
@@ -262,10 +246,15 @@ async def me(user_id: str = Depends(get_current_user_id)):
         password=settings.DB_PASSWORD,
         options="-c search_path=core",
     )
+
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT user_id, email, full_name, status FROM core.users WHERE user_id=%s",
+                """
+                SELECT user_id, email, full_name, status
+                FROM core.users
+                WHERE user_id = %s
+                """,
                 (user_id,),
             )
             row = cur.fetchone()
@@ -1201,51 +1190,19 @@ async def get_current_counselor_support(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on startup"""
-    
     logger.info(f"Starting {SERVICE_NAME}")
-    logger.info(f"Agentic Support and Peer Network Facilitator")
-    
-    # Pre-load models 
-    try:
-        analyzer = get_analyzer()
-        logger.info("ML models loaded")
-    except Exception as e:
-        logger.error(f"Failed to load models: {e}")
-        raise
-    
-    # Test database connection
-    try:
-        engine = get_engine()
-        logger.info("Database connected")
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        raise
-    
-    logger.info("API is ready to receive requests")
-    
+    logger.info("Auth-only API is ready")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
     logger.info(f"Shutting down {SERVICE_NAME}")
-    
-    # Close database connections
-    try:
-        engine = get_engine()
-        engine.close()
-        logger.info("Database connections closed")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
-
-
-
-# RUN SERVER
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+    from core.config import API_CONFIG
+
     uvicorn.run(
         "routes:app",
         host=API_CONFIG['host'],
