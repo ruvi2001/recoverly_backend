@@ -182,7 +182,9 @@ class InterventionTools:
         }
 
     def schedule_urgent_meeting(self, user_id: str) -> Dict:
-        """Auto-schedule urgent counselor meeting (demo scheduling)"""
+        """ Create an urgent counselor meeting request."""
+
+
         scheduled_time = datetime.now() + timedelta(hours=2)
 
         with self.engine.get_cursor() as cursor:
@@ -201,7 +203,8 @@ class InterventionTools:
                     60,
                     "counselor_emergency",
                     False,
-                    "scheduled",
+                    "pending_counselor_confirmation",
+                    "Urgent counselor meeting request created after high-risk social escalation",
                 ),
             )
             row = cursor.fetchone()
@@ -209,7 +212,7 @@ class InterventionTools:
 
         return {
             "action_type": "urgent_meeting_scheduled",
-            "status": "scheduled",
+            "status": "pending_counselor_confirmation",
             "data": {"meeting_id": meeting_id, "scheduled_time": scheduled_time.isoformat()},
         }
 

@@ -732,49 +732,261 @@ class TemporalRiskEngine:
         if self.connection_pool:
             self.connection_pool.closeall()
     
-
     def list_conversations_for_user(self, user_id: str):
+        """
+        List conversations visible to the current user.
+
+        If user cleared/deleted a conversation:
+        - old messages are hidden
+        - conversation disappears from list
+        - if a new message arrives later, the conversation appears again
+        """
         with self.get_cursor() as cursor:
             cursor.execute("""
-                SELECT
-                    c.conversation_id,
-                    c.conversation_type,
-                    (
-                        SELECT cp.user_id
-                        FROM core.conversation_participants cp
-                        WHERE cp.conversation_id = c.conversation_id AND cp.user_id <> %s
+                    SELECT
+                        c.conversation_id,
+                        c.conversation_type,
+                        (
+                            SELECT cp.user_id
+                            FROM core.conversation_participants cp
+                            WHERE cp.conversation_id = c.conversation_id
+                            AND cp.user_id <> %s
+                            LIMIT 1
+                        ) AS other_user_id,
+
+                        CASE
+                            WHEN m.deleted_for_everyone = TRUE THEN 'This message was deleted'
+                            ELSE m.message_text
+                        END AS last_message_text,
+
+                        m.timestamp AS last_message_time
+
+                    FROM core.conversations c
+
+                    JOIN core.conversation_participants p
+                        ON p.conversation_id = c.conversation_id
+
+                    LEFT JOIN core.conversation_deletions cd
+                        ON cd.conversation_id = c.conversation_id
+                    AND cd.user_id = %s
+
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            m2.message_text,
+                            m2.timestamp,
+                            m2.deleted_for_everyone
+                        FROM core.messages m2
+                        WHERE m2.conversation_id = c.conversation_id
+
+                        -- If user cleared the chat, only show new messages after clear time
+                        AND (
+                            cd.deleted_at IS NULL
+                            OR m2.timestamp > cd.deleted_at
+                        )
+
+                        ORDER BY m2.timestamp DESC
                         LIMIT 1
-                    ) AS other_user_id,
-                    m.message_text AS last_message_text,
-                    m.timestamp AS last_message_time
-                FROM core.conversations c
-                JOIN core.conversation_participants p ON p.conversation_id = c.conversation_id
-                LEFT JOIN LATERAL (
-                    SELECT message_text, timestamp
-                    FROM core.messages
-                    WHERE conversation_id = c.conversation_id
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-            ) m ON TRUE
-            WHERE p.user_id = %s
-            ORDER BY COALESCE(m.timestamp, c.created_at) DESC
-        """, (user_id, user_id))
+                    ) m ON TRUE
+
+                    WHERE p.user_id = %s
+
+                    -- If conversation was cleared and no new message came after that, hide it
+                    AND (
+                        cd.deleted_at IS NULL
+                        OR m.timestamp IS NOT NULL
+                    )
+
+                    ORDER BY COALESCE(m.timestamp, c.created_at) DESC
+                """, (user_id, user_id, user_id))
             
             rows = cursor.fetchall()
-            return rows
 
-    def get_messages(self, conversation_id: int, limit: int = 50):
+        return rows
+
+
+    def get_messages(self, conversation_id: int, user_id: str, limit: int = 50):
+        """
+        Return messages visible to this user.
+
+        This respects:
+        - conversation clear/delete for this user
+        - soft-deleted messages for everyone
+
+        Important:
+        If a message is soft-deleted, original message_text remains in DB,
+        but frontend receives 'This message was deleted'.
+        """
         with self.get_cursor() as cursor:
             cursor.execute("""
-                SELECT message_id, user_id, recipient_id, message_text, timestamp, conversation_type, metadata
-                FROM core.messages
-                WHERE conversation_id = %s
-                ORDER BY timestamp ASC
-                LIMIT %s
-            """, (conversation_id, limit))
+                SELECT *
+                FROM (
+                    SELECT
+                        m.message_id,
+                        m.user_id,
+                        m.recipient_id,
 
+                        CASE
+                            WHEN m.deleted_for_everyone = TRUE
+                            THEN 'This message was deleted'
+                            ELSE m.message_text
+                        END AS message_text,
+
+                        m.timestamp,
+                        m.conversation_type,
+                        m.metadata,
+                        m.conversation_id,
+                        m.deleted_for_everyone,
+                        m.deleted_at,
+                        m.deleted_by
+
+                    FROM core.messages m
+
+                    LEFT JOIN core.conversation_deletions cd
+                        ON cd.conversation_id = m.conversation_id
+                    AND cd.user_id = %s
+
+                    WHERE m.conversation_id = %s
+
+                    -- If current user cleared chat, hide messages before clear time
+                    AND (
+                        cd.deleted_at IS NULL
+                        OR m.timestamp > cd.deleted_at
+                    )
+
+                    ORDER BY m.timestamp DESC
+                    LIMIT %s
+                ) recent_messages
+                ORDER BY timestamp ASC
+            """, (user_id, conversation_id, limit))
+            
             rows = cursor.fetchall()
-            return rows
+
+        return rows
+    
+    def delete_conversation_for_user(self, conversation_id: int, user_id: str) -> Dict:
+        """
+        Hide/clear a conversation for one user only.
+
+        This does NOT delete:
+        - core.conversations
+        - core.messages
+        - social.message_predictions
+
+        Therefore risk analysis is not affected.
+        """
+        self.assert_user_in_conversation(conversation_id, user_id)
+
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO core.conversation_deletions (
+                    conversation_id,
+                    user_id,
+                    deleted_at
+                )
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (conversation_id, user_id)
+                DO UPDATE SET deleted_at = CURRENT_TIMESTAMP
+                RETURNING conversation_id, user_id, deleted_at
+            """, (conversation_id, user_id))
+
+            row = cursor.fetchone()
+
+        return row
+
+    def soft_delete_message_for_everyone(
+        self,
+        conversation_id: int,
+        message_id: int,
+        user_id: str
+    ) -> Dict:
+        """
+        Soft delete one message for everyone.
+
+        Only sender can delete their own message.
+        Original message text stays in DB for analysis.
+        """
+        self.assert_user_in_conversation(conversation_id, user_id)
+
+        with self.get_cursor() as cursor:
+            #  Check message exists in this conversation
+            cursor.execute("""
+                SELECT
+                    message_id,
+                    user_id,
+                    conversation_id,
+                    deleted_for_everyone
+                FROM core.messages
+                WHERE message_id = %s
+                AND conversation_id = %s
+                LIMIT 1
+            """, (message_id, conversation_id))
+
+            msg = cursor.fetchone()
+
+            if not msg:
+                raise ValueError("Message not found in this conversation")
+
+            #   Only sender can delete for everyone
+            if msg["user_id"] != user_id:
+                raise PermissionError("You can delete only messages you sent")
+
+            if msg.get("deleted_for_everyone"):
+                return {
+                    "message_id": message_id,
+                    "conversation_id": conversation_id,
+                    "deleted_for_everyone": True,
+                    "deleted_by": user_id,
+                    "already_deleted": True,
+                }
+            #   oft delete message
+            cursor.execute("""
+                UPDATE core.messages
+                SET
+                    deleted_for_everyone = TRUE,
+                    deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s
+                WHERE message_id = %s
+                AND conversation_id = %s
+                AND user_id = %s
+                RETURNING
+                    message_id,
+                    conversation_id,
+                    user_id,
+                    recipient_id,
+                    timestamp,
+                    deleted_for_everyone,
+                    deleted_at,
+                    deleted_by
+            """, (user_id, message_id, conversation_id, user_id))
+
+            updated = cursor.fetchone()
+
+            if not updated:
+                raise ValueError("Failed to delete message")
+
+        return updated
+        
+    def get_conversation_type(self, conversation_id: int) -> str:
+            """
+            Get conversation type from core.conversations.
+
+            Your current REST send-message code hard-codes conversation_type='buddy'.
+            That is wrong when the chat is a counselor chat.
+            """
+            with self.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT conversation_type
+                    FROM core.conversations
+                    WHERE conversation_id = %s
+                    LIMIT 1
+                """, (conversation_id,))
+
+                row = cursor.fetchone()
+
+                if not row:
+                    raise ValueError("Conversation not found")
+
+            return row["conversation_type"]
 
 # Singleton instance
 _engine_instance = None
