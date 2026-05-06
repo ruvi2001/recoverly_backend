@@ -179,6 +179,7 @@ class ARRSAnalyzeResponse(BaseModel):
     selected_action: str | dict | list
     recommendation: str | dict | list
     confidence: float | None = None
+    risk_level: Optional[str] = None
 
 
 class ARRSSaveSessionRequest(BaseModel):
@@ -188,11 +189,15 @@ class ARRSSaveSessionRequest(BaseModel):
     confidence: Optional[float] = None
     answers: dict[str, list[str]]
     recommendation: Any = None
-    feedback_rating: int
+
+    feedback_rating: Optional[int] = Field(default=None, ge=1, le=5)
     feedback_text: Optional[str] = ""
 
+    feedback_helpful: Optional[bool] = None
+    acted_on: Optional[bool] = None
 
 class ARRSSaveSessionResponse(BaseModel):
     ok: bool
     session_id: int
+    recommendation_id: Optional[int] = None
     message: str
