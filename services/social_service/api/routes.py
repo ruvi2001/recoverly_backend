@@ -164,14 +164,14 @@ class CounselorMeetingRequestIn(BaseModel):
     reason: Optional[str] = None
     meeting_mode: str = Field(default="in_app_chat")
 
-# class InterventionRecommendation(BaseModel):
-#     """Recommended intervention for a user"""
-#     user_id: str
-#     risk_label: str
-#     intervention_type: str
-#     message: str
-#     urgency: str
-#     context: dict
+class InterventionRecommendation(BaseModel):
+    """Recommended intervention for a user"""
+    user_id: str
+    risk_label: str
+    intervention_type: str
+    message: str
+    urgency: str
+    context: dict
 
 # AUTHENTICATION (Simple API Key)
 

@@ -1,0 +1,139 @@
+{
+  "Grounding_and_Coping": [
+    {
+      "id": "gc_001",
+      "title": "5-4-3-2-1 grounding",
+      "message": "Pause for a moment. Look around and name 5 things you can see, 4 things you can feel, 3 things you hear, 2 things you smell, and 1 thing you taste. This can help shift your focus away from the urge."
+    },
+    {
+      "id": "gc_002",
+      "title": "10 minute pause",
+      "message": "Give yourself 10 minutes before reacting to the urge. During that time take slow breaths and remind yourself that urges usually pass."
+    },
+    {
+      "id": "gc_003",
+      "title": "Change location",
+      "message": "If possible, move to a different place for a few minutes. A short walk or changing rooms can help reset your focus."
+    },
+    {
+      "id": "gc_004",
+      "title": "Cold water reset",
+      "message": "Drink a glass of cold water slowly or wash your face with cold water. This small action can help interrupt the urge."
+    }
+  ],
+
+  "Support_Routing_or_Safe_Space": [
+    {
+      "id": "ss_001",
+      "title": "Reach out to someone you trust",
+      "message": "Consider calling or messaging a trusted friend or family member and letting them know how you're feeling."
+    },
+    {
+      "id": "ss_002",
+      "title": "Spend time with supportive people",
+      "message": "If possible, spend some time around people who support your recovery goals."
+    },
+    {
+      "id": "ss_003",
+      "title": "Move to a safer environment",
+      "message": "If you're in a place that feels risky, try moving somewhere that feels safer or more comfortable."
+    },
+    {
+      "id": "ss_004",
+      "title": "Connect with recovery support",
+      "message": "If you are part of a recovery group or program, consider checking in with someone from that community."
+    }
+  ],
+
+  "Coping_Skill_Training": [
+    {
+      "id": "cs_001",
+      "title": "Notice the trigger",
+      "message": "Take a moment to think about what may have triggered the urge. Was it stress, a place, or a situation? Recognizing triggers can help you prepare next time."
+    },
+    {
+      "id": "cs_002",
+      "title": "Prepare a simple response",
+      "message": "If someone offers substances, you could plan a simple response such as 'No thanks, I'm focusing on other priorities right now.'"
+    },
+    {
+      "id": "cs_003",
+      "title": "Write down a quick plan",
+      "message": "Write down two or three things you can do when urges appear, such as walking, calling someone, or listening to music."
+    },
+    {
+      "id": "cs_004",
+      "title": "Remember a previous success",
+      "message": "Think about a time when you handled a difficult moment successfully. What helped you then?"
+    }
+  ],
+
+  "Routine_and_Progress": [
+    {
+      "id": "rp_001",
+      "title": "Plan the next hour",
+      "message": "Think about one or two positive activities you can do in the next hour, such as preparing food, exercising, or organizing something small."
+    },
+    {
+      "id": "rp_002",
+      "title": "Move your body",
+      "message": "Try light physical activity like walking, stretching, or simple exercise. Physical movement can help reduce stress."
+    },
+    {
+      "id": "rp_003",
+      "title": "Recognize your progress",
+      "message": "Take a moment to recognize the effort you’ve put into staying on track. Small steps forward still count."
+    },
+    {
+      "id": "rp_004",
+      "title": "Do something enjoyable",
+      "message": "Spend a little time on something you enjoy such as music, reading, cooking, or another hobby."
+    }
+  ],
+
+  "Motivational_Message": [
+    {
+      "id": "mm_001",
+      "title": "Focus on your goals",
+      "message": "Remind yourself why you chose this path. Your goals and future plans are worth protecting."
+    },
+    {
+      "id": "mm_002",
+      "title": "Urges pass",
+      "message": "Urges can feel strong, but they usually pass with time. Taking small positive steps can help you get through them."
+    },
+    {
+      "id": "mm_003",
+      "title": "Every step matters",
+      "message": "Each time you make a positive choice, you are building stronger habits for the future."
+    },
+    {
+      "id": "mm_004",
+      "title": "You’re not alone",
+      "message": "Many people work through similar challenges. Support and understanding are available when you reach out."
+    }
+  ],
+
+  "Coping_Prompt": [
+    {
+      "id": "cp_001",
+      "title": "Three slow breaths",
+      "message": "Pause and take three slow breaths. Focus only on breathing in and out."
+    },
+    {
+      "id": "cp_002",
+      "title": "Drink water",
+      "message": "Drink a glass of water slowly and take a short pause."
+    },
+    {
+      "id": "cp_003",
+      "title": "Step outside briefly",
+      "message": "If possible, step outside or look out a window for a few minutes."
+    },
+    {
+      "id": "cp_004",
+      "title": "Send a quick message",
+      "message": "Consider sending a short message to someone supportive just to stay connected."
+    }
+  ]
+}

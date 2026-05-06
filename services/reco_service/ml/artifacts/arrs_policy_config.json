@@ -1,0 +1,17 @@
+{
+  "hybrid_policy_version": "hybrid_option_c_v1",
+  "guardrail_policy_version": "guardrail_v1",
+  "reward_policy_version": "reward_v1",
+  "logging_policy_type": "provided_by_feedback_dataset",
+  "min_rewarded_events_for_personalization": 3,
+  "classifier_weight": 0.6,
+  "bandit_weight": 0.4,
+  "actions": [
+    "Coping_Prompt",
+    "Coping_Skill_Training",
+    "Grounding_and_Coping",
+    "Motivational_Message",
+    "Routine_and_Progress",
+    "Support_Routing_or_Safe_Space"
+  ]
+}
