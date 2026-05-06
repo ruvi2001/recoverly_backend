@@ -36,7 +36,7 @@ class RecommendationAssessment(Base):
         index=True,
     )
 
-    relapse_risk_level = Column(String(50), nullable=False)
+    relapse_risk_level = Column("risk_level", String(50), nullable=False)    
     raw_payload = Column(JSONB, nullable=False)
     encoded_vector = Column(JSONB, nullable=True)
     request_meta = Column(JSONB, nullable=True)
@@ -82,6 +82,14 @@ class Recommendation(Base):
         unique=True,
         index=True,
     )
+
+    user_id = Column(
+        String(255),
+        ForeignKey("core.users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
 
     recommendation_family = Column(String(100), nullable=False)
     selected_action = Column(String(150), nullable=False)
@@ -265,7 +273,7 @@ class ARRSSession(Base):
     answers_json = Column(JSONB, nullable=False)
     recommendation_json = Column(JSONB, nullable=True)
 
-    feedback_rating = Column(Integer, nullable=False)
+    feedback_rating = Column(Integer, nullable=True)
     feedback_text = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
