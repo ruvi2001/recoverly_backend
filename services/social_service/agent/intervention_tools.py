@@ -192,8 +192,8 @@ class InterventionTools:
                 """
                 INSERT INTO social.meetings (
                     user_id, meeting_type, scheduled_time, duration_minutes,
-                    counselor_id, user_consent, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    counselor_id, user_consent, status, notes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING meeting_id
                 """,
                 (

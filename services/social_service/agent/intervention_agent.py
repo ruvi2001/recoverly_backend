@@ -75,110 +75,153 @@ class InterventionAgent:
         return actions_taken
     
     def _should_intervene(self, user_id: str, risk_label: str, risk_profile: Dict = None) -> bool:
-        
-        """
-        Check if we should send intervention based on frequency limits.
+            """
+            Decide whether to create a new intervention.
 
-        Testing-friendly behavior:
-        - LOW_RISK: use normal rules
-        - MODERATE_RISK: do not let an earlier LOW_RISK nudge block a MEDIUM nudge
-        - HIGH_RISK: do not let LOW/MEDIUM history block crisis escalation
-        """
+            Important behavior:
+            - LOW_RISK uses normal frequency rules.
+            - MODERATE_RISK uses normal medium nudge limits.
+            - HIGH_RISK should not be blocked by old LOW/MEDIUM nudges.
+            - HIGH_RISK should also not create repeated popups after the user already acknowledged one.
+            """
 
-        # Extra LOW-risk gating rule
-        if risk_label == 'LOW_RISK' and risk_profile:
-            short_count = risk_profile.get("short_window", {}).get("message_count", 0)
-            if short_count < 7:
-                logger.info(f"Skipping LOW_RISK intervention for {user_id} (only {short_count} recent messages)")
-                return False
-            
-        with self.engine.get_cursor() as cursor:
-            if risk_label == "LOW_RISK":
-                # original behavior for low-risk nudges
-                cursor.execute("""
-                    SELECT COUNT(*) AS count
-                    FROM social.actions
-                    WHERE user_id = %s
-                    AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
-                """, (user_id,))
-                interventions_today = cursor.fetchone()["count"]
-
-                cursor.execute("""
-                    SELECT timestamp
-                    FROM social.actions
-                    WHERE user_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (user_id,))
-                last_intervention = cursor.fetchone()
-
-            elif risk_label == "MODERATE_RISK":
-                # only count/block against recent MEDIUM or HIGH style actions
-                cursor.execute("""
-                    SELECT COUNT(*) AS count
-                    FROM social.actions
-                    WHERE user_id = %s
-                    AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
-                    AND action_type IN (
-                        'buddy_connection_nudge',
-                        'counselor_alert',
-                        'urgent_meeting_scheduled',
-                        'crisis_resources'
+            # LOW-risk popup should not appear too early
+            if risk_label == "LOW_RISK" and risk_profile:
+                short_count = risk_profile.get("short_window", {}).get("message_count", 0)
+                if short_count < 7:
+                    logger.info(
+                        f"Skipping LOW_RISK intervention for {user_id} "
+                        f"(only {short_count} recent messages)"
                     )
-                """, (user_id,))
-                interventions_today = cursor.fetchone()["count"]
+                    return False
 
-                cursor.execute("""
-                    SELECT timestamp
-                    FROM social.actions
-                    WHERE user_id = %s
-                    AND action_type IN (
-                        'buddy_connection_nudge',
-                        'counselor_alert',
-                        'urgent_meeting_scheduled',
-                        'crisis_resources'
-                    )
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (user_id,))
-                last_intervention = cursor.fetchone()
+            # HIGH-RISK special handling
+            if risk_label == "HIGH_RISK":
+                with self.engine.get_cursor() as cursor:
+                    # 1. If there is already a pending escalation, do not create another.
+                    cursor.execute("""
+                        SELECT escalation_id
+                        FROM social.escalations
+                        WHERE user_id = %s
+                        AND status = 'pending'
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (user_id,))
+                    pending_escalation = cursor.fetchone()
 
+                    if pending_escalation:
+                        logger.info(
+                            f"Skipping HIGH_RISK intervention for {user_id} "
+                            f"(pending escalation already exists)"
+                        )
+                        return False
+
+                    # 2. If user recently acknowledged/pause-closed a high popup,
+                    # allow chat access and do not recreate another popup immediately.
+                    cursor.execute("""
+                        SELECT acknowledged_at
+                        FROM social.escalations
+                        WHERE user_id = %s
+                        AND status = 'acknowledged'
+                        AND acknowledged_at IS NOT NULL
+                        ORDER BY acknowledged_at DESC
+                        LIMIT 1
+                    """, (user_id,))
+                    last_ack = cursor.fetchone()
+
+                    if last_ack and last_ack.get("acknowledged_at"):
+                        minutes_ago = (
+                            datetime.now() - last_ack["acknowledged_at"]
+                        ).total_seconds() / 60
+
+                        # You can change 30 to 10 for demo, or 60 for more realistic behavior.
+                        if minutes_ago < 10:
+                            logger.info(
+                                f"Skipping HIGH_RISK intervention for {user_id} "
+                                f"(high popup acknowledged {minutes_ago:.1f} minutes ago)"
+                            )
+                            return False
+
+                # No pending escalation and no recent acknowledgement.
+                # Allow high-risk intervention.
+                return True
+
+            # LOW / MODERATE / ISOLATION frequency logic
+            with self.engine.get_cursor() as cursor:
+                if risk_label == "LOW_RISK":
+                    cursor.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM social.actions
+                        WHERE user_id = %s
+                        AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
+                    """, (user_id,))
+                    interventions_today = cursor.fetchone()["count"]
+
+                    cursor.execute("""
+                        SELECT timestamp
+                        FROM social.actions
+                        WHERE user_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (user_id,))
+                    last_intervention = cursor.fetchone()
+
+                elif risk_label == "MODERATE_RISK":
+                    cursor.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM social.actions
+                        WHERE user_id = %s
+                        AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
+                        AND action_type IN (
+                            'buddy_connection_nudge',
+                            'counselor_alert',
+                            'urgent_meeting_scheduled',
+                            'crisis_resources'
+                        )
+                    """, (user_id,))
+                    interventions_today = cursor.fetchone()["count"]
+
+                    cursor.execute("""
+                        SELECT timestamp
+                        FROM social.actions
+                        WHERE user_id = %s
+                        AND action_type IN (
+                            'buddy_connection_nudge',
+                            'counselor_alert',
+                            'urgent_meeting_scheduled',
+                            'crisis_resources'
+                        )
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (user_id,))
+                    last_intervention = cursor.fetchone()
+
+                else:
+                    cursor.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM social.actions
+                        WHERE user_id = %s
+                        AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
+                    """, (user_id,))
+                    interventions_today = cursor.fetchone()["count"]
+
+                    cursor.execute("""
+                        SELECT timestamp
+                        FROM social.actions
+                        WHERE user_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (user_id,))
+                    last_intervention = cursor.fetchone()
+
+            if last_intervention:
+                hours_ago = (
+                    datetime.now() - last_intervention["timestamp"]
+                ).total_seconds() / 3600
             else:
-                # HIGH_RISK: only let previous HIGH actions block HIGH,
-                # never let a low/medium nudge block a crisis escalation
-                cursor.execute("""
-                    SELECT COUNT(*) AS count
-                    FROM social.actions
-                    WHERE user_id = %s
-                    AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')
-                    AND action_type IN (
-                        'counselor_alert',
-                        'urgent_meeting_scheduled',
-                        'crisis_resources'
-                    )
-                """, (user_id,))
-                interventions_today = cursor.fetchone()["count"]
+                hours_ago = 999
 
-                cursor.execute("""
-                    SELECT timestamp
-                    FROM social.actions
-                    WHERE user_id = %s
-                    AND action_type IN (
-                        'counselor_alert',
-                        'urgent_meeting_scheduled',
-                        'crisis_resources'
-                    )
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (user_id,))
-                last_intervention = cursor.fetchone()
-
-        if last_intervention:
-            hours_ago = (datetime.now() - last_intervention["timestamp"]).total_seconds() / 3600
-        else:
-            hours_ago = 999
-
-        return should_send_intervention(risk_label, hours_ago, interventions_today)
+            return should_send_intervention(risk_label, hours_ago, interventions_today)
     
     def _execute_action(
         self, 
